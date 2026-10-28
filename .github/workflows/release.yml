@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Docker integration tests
+        run: GCLOUD_LOCAL_INTEGRATION=1 go test -v ./internal/localbuild -run TestDockerIntegration
+      - name: Build release archives
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            package="gcloud-local_linux_${arch}"
+            mkdir -p "dist/${package}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-X 'gcloud-local/internal/localbuild.Version=${VERSION}'" \
+              -o "dist/${package}/gcloud-local" ./cmd/gcloud-local
+            cp LICENSE README.md "dist/${package}/"
+            tar -C dist -czf "dist/${package}.tar.gz" "$package"
+            rm -r "dist/${package}"
+          done
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes --title "$RELEASE_TAG"

@@ -1,0 +1,20 @@
+timeout: 300s
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: prepare
+    entrypoint: bash
+    env: ['MESSAGE=${_MESSAGE}']
+    args:
+      - -euc
+      - |
+        gcloud auth configure-docker
+        printf '%s\n' "$$MESSAGE" > message.txt
+        printf 'FROM scratch\nCOPY message.txt /message.txt\n' > Dockerfile
+        docker version
+        docker buildx version
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args: ['build', '-t', '${_IMAGE}', '.']
+substitutions:
+  _MESSAGE: local-build-ok
+  _IMAGE: gcloud-local-smoke:test
