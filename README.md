@@ -50,6 +50,7 @@ gcloud-local builds submit . --config cloudbuild.yaml --dry-run
 | `--substitutions K=V,...` | 覆盖替换变量，可重复传入 |
 | `--project ID` | 设置 `PROJECT_ID`，默认 `local` |
 | `--region REGION` | 设置 `LOCATION`，默认 `local` |
+| `--verbosity LEVEL` | 兼容 gcloud 参数，接受但不改变本地日志输出 |
 | `--workspace-root DIR` | 为没有 `.git` 的源码指定工作区根目录 |
 | `--no-push` | 跳过最终镜像推送，以及步骤内常见的 Docker push 和 manifest 命令 |
 | `--dry-run` | 输出 JSON 构建计划，不执行 Docker |

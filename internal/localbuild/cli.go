@@ -31,12 +31,20 @@ Execute Cloud Build image steps against a local Docker daemon.
   --docker-bin PATH          Docker CLI executable (default docker)
   --network NAME             Step container network (default bridge)
   --quiet, -q                Accepted for gcloud compatibility
+  --verbosity LEVEL          Accepted for gcloud compatibility; logging is unchanged
   --version                  Show build version
   --help, -h                 Show help
 
 Only local synchronous builds are supported. Unsupported config fields fail explicitly.
 Steps run sequentially; waitFor dependencies are validated. Registry login must be
 performed using docker login before submission.
+
+Environment defaults (explicit flags take precedence):
+  CLOUDSDK_CORE_PROJECT      Default PROJECT_ID
+  CLOUDSDK_BUILDS_REGION     Default LOCATION
+  GCLOUD_LOCAL_NO_PUSH       Boolean default for --no-push
+  GCLOUD_LOCAL_DRY_RUN       Boolean default for --dry-run
+  GCLOUD_LOCAL_BUILDER_IMAGES  Comma-separated OLD=NEW image replacements
 `
 
 // Version can be set at build time using -ldflags "-X gcloud-local/internal/localbuild.Version=...".
@@ -69,21 +77,51 @@ func parseAssignments(s string) (map[string]string, error) {
 	}
 	return result, nil
 }
+
+func validateVerbosity(value string) error {
+	switch value {
+	case "debug", "info", "warning", "error", "critical", "none":
+		return nil
+	default:
+		return fmt.Errorf("invalid verbosity %q; expected debug, info, warning, error, critical, or none", value)
+	}
+}
+
 func parseCLI(args []string) (CLI, error) {
 	o := CLI{Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}, BuilderImages: map[string]string{}}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		o.Help = true
 		return o, nil
 	}
-	// Accept global --quiet before the command as well.
-	for len(args) > 0 && (args[0] == "--quiet" || args[0] == "-q") {
-		args = args[1:]
+	// gcloud accepts compatibility flags before or after the command.
+globalFlags:
+	for len(args) > 0 {
+		key, value, hasValue := strings.Cut(args[0], "=")
+		switch key {
+		case "--quiet", "-q":
+			args = args[1:]
+		case "--verbosity":
+			if !hasValue {
+				if len(args) < 2 {
+					return o, fmt.Errorf("missing value for %s", key)
+				}
+				value = args[1]
+				args = args[1:]
+			}
+			if err := validateVerbosity(value); err != nil {
+				return o, err
+			}
+			args = args[1:]
+		default:
+			break globalFlags
+		}
 	}
 	if len(args) < 2 || args[0] != "builds" || args[1] != "submit" {
 		return o, fmt.Errorf("expected builds submit; run gcloud-local --help")
 	}
 	args = args[2:]
 	sourceSet := false
+	explicit := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
@@ -95,6 +133,7 @@ func parseCLI(args []string) (CLI, error) {
 			continue
 		}
 		key, v, has := strings.Cut(arg, "=")
+		explicit[key] = true
 		switch key {
 		case "--help", "-h":
 			o.Help = true
@@ -118,7 +157,7 @@ func parseCLI(args []string) (CLI, error) {
 			continue
 		}
 		switch key {
-		case "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--builder-image":
+		case "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--builder-image", "--verbosity":
 		default:
 			return o, fmt.Errorf("unsupported flag %s", key)
 		}
@@ -133,6 +172,10 @@ func parseCLI(args []string) (CLI, error) {
 			return o, fmt.Errorf("empty value for %s", key)
 		}
 		switch key {
+		case "--verbosity":
+			if err := validateVerbosity(v); err != nil {
+				return o, err
+			}
 		case "--config":
 			o.Config = v
 		case "--project":
@@ -165,6 +208,11 @@ func parseCLI(args []string) (CLI, error) {
 				return o, fmt.Errorf("builder-image expects OLD=NEW")
 			}
 			o.BuilderImages[k] = v
+		}
+	}
+	if !o.Help {
+		if err := applyEnvironment(&o, explicit); err != nil {
+			return o, err
 		}
 	}
 	return o, nil
