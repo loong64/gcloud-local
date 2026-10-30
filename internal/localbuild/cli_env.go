@@ -9,6 +9,7 @@ import (
 // Use Cloud SDK property names where equivalents exist. Local-only options
 // have their own namespace; none of these settings require a shell wrapper.
 func applyEnvironment(o *CLI, explicit map[string]bool) error {
+	o.BeforeScriptLinux = os.Getenv("GCLOUD_LOCAL_BEFOCE_SCRIPT_LINUX")
 	for _, setting := range []struct {
 		flag, env string
 		target    *string
@@ -41,20 +42,6 @@ func applyEnvironment(o *CLI, explicit map[string]bool) error {
 			return fmt.Errorf("GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS: %w", err)
 		}
 		o.MaxConcurrentBuilds = n
-	}
-	if value := os.Getenv("GCLOUD_LOCAL_BUILDER_IMAGES"); value != "" {
-		images, err := parseAssignments(value)
-		if err != nil {
-			return fmt.Errorf("GCLOUD_LOCAL_BUILDER_IMAGES: %w", err)
-		}
-		for old, replacement := range images {
-			if replacement == "" {
-				return fmt.Errorf("GCLOUD_LOCAL_BUILDER_IMAGES: builder-image expects OLD=NEW with a nonempty replacement")
-			}
-			if _, overridden := o.BuilderImages[old]; !overridden {
-				o.BuilderImages[old] = replacement
-			}
-		}
 	}
 	return nil
 }

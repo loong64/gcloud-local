@@ -31,7 +31,8 @@ Run `docker login` before pushing images. Host credential helpers are unsupporte
 
 - Steps run sequentially. `waitFor` references are validated but do not enable parallel execution. Unsupported config fields fail before execution; cloud machine, disk, and logging options are ignored with a notice.
 - Steps run as root and share the host Docker daemon. Source files are mounted writable, with automatic Git repository root detection. `.gcloudignore` and source snapshots are not supported.
-- `gcr.io/cloud-builders/docker` is replaced with a cached local builder containing the Docker CLI, Buildx, bash, make, and git. Override its base image with `GCLOUD_LOCAL_DOCKER_CLI_IMAGE`; it must support Alpine `apk`. Floating tag updates require manual cache removal.
+- Set `steps[].name` to `ghcr.io/loong64/cloud-builders/docker` or a custom image.
+- `GCLOUD_LOCAL_BEFOCE_SCRIPT_LINUX` runs commands inside each step container before `args` or `script`; dry runs skip it.
 - `--no-push` skips final image pushes and common Docker push and manifest commands within steps; Buildx remote outputs are rejected. Absolute-path Docker calls and direct registry API calls bypass this option.
 - `gcloud auth configure-docker` uses existing Docker credentials. Other nested `gcloud` commands are unsupported.
 - Only local synchronous builds are supported. GCP authentication, cloud logging, cloud secrets, artifacts, and remote Docker contexts are unavailable.

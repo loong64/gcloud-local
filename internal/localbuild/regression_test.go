@@ -19,44 +19,41 @@ func writeTestFile(t *testing.T, name, body string, mode os.FileMode) {
 	}
 }
 
-func TestBuilderBaseImageAndCache(t *testing.T) {
+func TestBuilderPullAndCache(t *testing.T) {
 	root := t.TempDir()
 	docker := filepath.Join(root, "docker")
-	writeTestFile(t, docker, `#!/bin/sh
-shift 4
-case "$1" in
-  image) exit 1 ;;
-  build) printf '%s\n' "$@"; cat ;;
-esac
-`, 0755)
 	o := testCLI()
 	o.Docker = docker
 	var output strings.Builder
 	r := runner{opts: o, out: &output, logs: io.Discard}
-	var previous string
-	for _, base := range []string{"", "docker:28-cli"} {
-		t.Setenv("GCLOUD_LOCAL_DOCKER_CLI_IMAGE", base)
-		wantBase := base
-		if wantBase == "" {
-			wantBase = "docker:cli"
+	for _, cached := range []bool{false, true} {
+		inspectCode := "1"
+		if cached {
+			inspectCode = "0"
 		}
-		_, image := localBuilder()
-		if image == previous {
-			t.Fatal("different base images share a cache tag")
-		}
-		previous = image
+		writeTestFile(t, docker, `#!/bin/sh
+shift 4
+case "$1 $2" in
+  'image inspect') exit `+inspectCode+` ;;
+  pull*) printf '%s\n' "$@" ;;
+  *) exit 99 ;;
+esac
+`, 0755)
 		output.Reset()
-		if err := r.ensureImage(context.Background(), builderImage); err != nil {
+		if err := r.ensureImage(context.Background(), "ghcr.io/loong64/cloud-builders/docker"); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(output.String(), "--build-arg\nDOCKER_CLI_IMAGE="+wantBase+"\n--tag\n"+image+"\n") || !strings.Contains(output.String(), builderDockerfile) {
-			t.Fatalf("unexpected build command: %s", output.String())
+		want := "pull\nghcr.io/loong64/cloud-builders/docker\n"
+		if cached {
+			want = ""
+		}
+		if output.String() != want {
+			t.Fatalf("cached=%v: got %q, want %q", cached, output.String(), want)
 		}
 	}
-	// An existing builder should be reused without invoking docker build.
-	writeTestFile(t, docker, "#!/bin/sh\nshift 4\n[ \"$1 $2\" = \"image inspect\" ]\n", 0755)
-	if err := r.ensureImage(context.Background(), builderImage); err != nil {
-		t.Fatalf("cached builder was not reused: %v", err)
+	writeTestFile(t, docker, "#!/bin/sh\nexit 1\n", 0755)
+	if err := r.ensureImage(context.Background(), "ghcr.io/loong64/cloud-builders/docker"); err == nil {
+		t.Fatal("failed pull must fail without falling back to a local build")
 	}
 }
 

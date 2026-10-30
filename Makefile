@@ -9,6 +9,6 @@ test:
 check:
 	go vet ./...
 integration:
-	GCLOUD_LOCAL_INTEGRATION=1 go test -v ./internal/localbuild -run TestDockerIntegration
+	GCLOUD_LOCAL_INTEGRATION=1 go test -count=1 -v ./...
 install: build
 	install -Dm755 gcloud-local $(DESTDIR)$(PREFIX)/bin/gcloud-local

@@ -107,17 +107,8 @@ func bind(src, dst string, ro bool) string {
 	return s
 }
 func (r *runner) ensureImage(ctx context.Context, image string) error {
-	isBuilder := image == builderImage
-	var base string
-	if isBuilder {
-		base, image = localBuilder()
-	}
 	if _, err := r.capture(ctx, "image", "inspect", image); err == nil {
 		return nil
-	}
-	if isBuilder {
-		fmt.Fprintln(r.logs, "gcloud-local: building local Docker/Make builder")
-		return r.command(ctx, builderDockerfile, "build", "--build-arg", "DOCKER_CLI_IMAGE="+base, "--tag", image, "-")
 	}
 	return r.command(ctx, "", "pull", image)
 }
@@ -216,15 +207,22 @@ func (r *runner) step(ctx context.Context, index int, s StepPlan, root string, v
 	if err := r.ensureImage(ctx, s.Image); err != nil {
 		return err
 	}
-	if s.Image == builderImage {
-		_, s.Image = localBuilder()
-	}
-	imageEnv, err := r.capture(ctx, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", s.Image)
+	imageConfigJSON, err := r.capture(ctx, "image", "inspect", "--format", "{{json .Config}}", s.Image)
 	if err != nil {
 		return err
 	}
+	var imageConfig struct {
+		Env        []string
+		Entrypoint []string
+		Cmd        []string
+	}
+	if strings.TrimSpace(imageConfigJSON) != "" {
+		if err := json.Unmarshal([]byte(imageConfigJSON), &imageConfig); err != nil {
+			return fmt.Errorf("image %s config: %w", s.Image, err)
+		}
+	}
 	imagePath := "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	for _, e := range strings.Split(imageEnv, "\n") {
+	for _, e := range imageConfig.Env {
 		if strings.HasPrefix(e, "PATH=") {
 			imagePath = strings.TrimPrefix(e, "PATH=")
 		}
@@ -268,6 +266,42 @@ func (r *runner) step(ctx context.Context, index int, s StepPlan, root string, v
 		args = append(args, "--mount", bind(file, "/gcloud-local/script", true))
 		entry = "/gcloud-local/script"
 		stepArgs = nil
+	}
+	// Route Docker entrypoints through the no-push wrapper while retaining
+	// the exact executable selected by the image or the build configuration.
+	if s.Step.Script == "" {
+		if entry == "" && len(imageConfig.Entrypoint) > 0 && filepath.Base(imageConfig.Entrypoint[0]) == "docker" {
+			entry = imageConfig.Entrypoint[0]
+			if len(stepArgs) == 0 {
+				stepArgs = imageConfig.Cmd
+			}
+			stepArgs = append(append([]string{}, imageConfig.Entrypoint[1:]...), stepArgs...)
+		}
+		if filepath.Base(entry) == "docker" {
+			stepArgs = append([]string{"--gcloud-local-executable", entry}, stepArgs...)
+			entry = "/gcloud-local/bin/docker"
+		}
+	}
+	if r.opts.BeforeScriptLinux != "" {
+		command := stepArgs
+		if entry != "" {
+			command = append([]string{entry}, command...)
+		} else {
+			if len(command) == 0 {
+				command = imageConfig.Cmd
+			}
+			command = append(append([]string{}, imageConfig.Entrypoint...), command...)
+		}
+		if len(command) == 0 {
+			return fmt.Errorf("step %d: no command to execute after GCLOUD_LOCAL_BEFOCE_SCRIPT_LINUX", index)
+		}
+		file := filepath.Join(r.temp, fmt.Sprintf("before-step-%d", index))
+		script := "#!/bin/sh\nset -e\ngcloud_local_before() {\n:\n" + r.opts.BeforeScriptLinux + "\n}\ngcloud_local_before\nexec \"$@\"\n"
+		if err := os.WriteFile(file, []byte(script), 0755); err != nil {
+			return err
+		}
+		args = append(args, "--mount", bind(file, "/gcloud-local/before-step", true))
+		entry, stepArgs = "/gcloud-local/before-step", command
 	}
 	if entry != "" {
 		args = append(args, "--entrypoint", entry)

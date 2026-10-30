@@ -302,12 +302,6 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 		if e != nil {
 			return p, e
 		}
-		image := st.Name
-		if replacement, ok := opts.BuilderImages[image]; ok {
-			image = replacement
-		} else if image == "gcr.io/cloud-builders/docker" {
-			image = builderImage
-		}
 		vols := append(append([]Volume{}, c.Options.Volumes...), st.Volumes...)
 		paths := map[string]bool{}
 		for _, v := range vols {
@@ -320,7 +314,7 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 			paths[v.Path] = true
 		}
 		st.Volumes = vols
-		p.Steps = append(p.Steps, StepPlan{Step: st, Image: image, Workdir: path.Join("/workspace", filepath.ToSlash(rel)), Env: envList, Timeout: stepTimeout})
+		p.Steps = append(p.Steps, StepPlan{Step: st, Image: st.Name, Workdir: path.Join("/workspace", filepath.ToSlash(rel)), Env: envList, Timeout: stepTimeout})
 	}
 	for _, im := range c.Images {
 		p.Images = append(p.Images, sub(im))

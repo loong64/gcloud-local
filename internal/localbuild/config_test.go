@@ -39,7 +39,7 @@ func TestCLI(t *testing.T) {
 	if err != nil || o.Source != "source" || o.Config != "x.yaml" || o.Substitutions["_A"] != "a,b" || o.Substitutions["_B"] != "x=y" || !o.NoPush || o.DryRun {
 		t.Fatal(o, err)
 	}
-	for _, args := range [][]string{{"builds", "submit", "--async"}, {"builds", "submit", "--config"}, {"builds", "submit", "a", "b"}, {"builds", "submit", "--builder-image=x"}} {
+	for _, args := range [][]string{{"builds", "submit", "--async"}, {"builds", "submit", "--config"}, {"builds", "submit", "a", "b"}, {"builds", "submit", "--builder-image=old=new"}} {
 		if _, err := parseCLI(args); err == nil {
 			t.Fatal("invalid args accepted", args)
 		}
@@ -66,7 +66,7 @@ func TestPlanPathsSubstitutionsAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Workspace != root || p.Steps[0].Workdir != "/workspace/services/app/output" || p.Images[0] != "ghcr.io/example/registry/test:v1" || p.Images[1] != "gcr.io/local/test:v1" || p.Steps[0].Image != builderImage {
+	if p.Workspace != root || p.Steps[0].Workdir != "/workspace/services/app/output" || p.Images[0] != "ghcr.io/example/registry/test:v1" || p.Images[1] != "gcr.io/local/test:v1" || p.Steps[0].Image != "gcr.io/cloud-builders/docker" {
 		t.Fatalf("%+v", p)
 	}
 	if strings.Join(p.Steps[0].Env, ",") != "TAG=v1,X=step" {

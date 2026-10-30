@@ -22,12 +22,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Test
-        run: go test -race ./...
       - name: Vet
         run: go vet ./...
-      - name: Docker integration tests
-        run: GCLOUD_LOCAL_INTEGRATION=1 go test -v ./internal/localbuild -run TestDockerIntegration
+      - name: Test
+        run: GCLOUD_LOCAL_INTEGRATION=1 go test -count=1 -race -v ./...
       - name: Build release archives
         shell: bash
         env:

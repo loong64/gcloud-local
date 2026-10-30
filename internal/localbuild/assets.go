@@ -1,29 +1,5 @@
 package localbuild
 
-import (
-	"crypto/sha256"
-	"fmt"
-	"os"
-)
-
-const builderImage = "gcloud-local/builder:v1"
-const builderDockerfile = `ARG DOCKER_CLI_IMAGE=docker:cli
-FROM ${DOCKER_CLI_IMAGE}
-RUN apk add --no-cache bash make git coreutils findutils curl ca-certificates tar gzip sed grep rsync jq python3 openssl
-RUN git config --system --add safe.directory /workspace
-ENTRYPOINT ["docker"]
-`
-
-func localBuilder() (base, image string) {
-	base = os.Getenv("GCLOUD_LOCAL_DOCKER_CLI_IMAGE")
-	if base == "" {
-		base = "docker:cli"
-	}
-	// Separate caches for base images and builder recipes, including older builds.
-	sum := sha256.Sum256([]byte(base + "\n" + builderDockerfile))
-	return base, fmt.Sprintf("gcloud-local/builder:%x", sum[:16])
-}
-
 // These wrappers are mounted ahead of the image's own binaries, never installed
 // into or substituted inside the repository being built.
 const gcloudShim = `#!/bin/sh
@@ -36,6 +12,13 @@ echo "gcloud-local: unsupported nested gcloud command: $*" >&2
 exit 2
 `
 const dockerShim = `#!/bin/sh
+# Entrypoint calls retain their original executable, including absolute paths.
+docker_executable=docker
+if [ "${1-}" = --gcloud-local-executable ]; then
+  [ "$#" -ge 2 ] || { echo 'gcloud-local: missing Docker executable' >&2; exit 2; }
+  docker_executable=$2
+  shift 2
+fi
 # Preserve the image PATH, removing this wrapper's directory before delegation.
 real_path=
 old_ifs=$IFS
@@ -84,5 +67,5 @@ if [ "${GCLOUD_LOCAL_NO_PUSH:-0}" = 1 ]; then
   }
   check_no_push "$@"
 fi
-exec docker "$@"
+exec "$docker_executable" "$@"
 `

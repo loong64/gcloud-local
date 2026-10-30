@@ -38,7 +38,6 @@ func TestVerbosityCompatibility(t *testing.T) {
 func TestExternalToolSubmission(t *testing.T) {
 	t.Setenv("GCLOUD_LOCAL_NO_PUSH", "true")
 	t.Setenv("GCLOUD_LOCAL_DRY_RUN", "true")
-	t.Setenv("GCLOUD_LOCAL_BUILDER_IMAGES", "gcr.io/cloud-builders/docker=example/builder:local")
 	root := t.TempDir()
 	source := filepath.Join(root, "project")
 	configDir := filepath.Join(source, "services", "app")
@@ -49,7 +48,7 @@ func TestExternalToolSubmission(t *testing.T) {
 	if err := os.WriteFile(config, []byte(`options:
   machineType: N1_HIGHCPU_8
 steps:
-- name: gcr.io/cloud-builders/docker
+- name: example/builder:local
   dir: ./services/app
   entrypoint: bash
   args: [-c, 'make build']
@@ -107,27 +106,23 @@ func TestEnvironmentDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("CLOUDSDK_BUILDS_REGION", "env-region")
 	t.Setenv("GCLOUD_LOCAL_NO_PUSH", "true")
 	t.Setenv("GCLOUD_LOCAL_DRY_RUN", "1")
-	t.Setenv("GCLOUD_LOCAL_BUILDER_IMAGES", "^;^old/image=env/image;other/image=env/other")
 	o, err := parseCLI([]string{"builds", "submit"})
-	if err != nil || o.Project != "env-project" || o.Region != "env-region" || !o.NoPush || !o.DryRun || o.BuilderImages["old/image"] != "env/image" || o.BuilderImages["other/image"] != "env/other" {
+	if err != nil || o.Project != "env-project" || o.Region != "env-region" || !o.NoPush || !o.DryRun {
 		t.Fatalf("environment defaults: %+v, %v", o, err)
 	}
-	o, err = parseCLI([]string{"builds", "submit", "--project=flag-project", "--region", "flag-region", "--no-push=false", "--dry-run=false", "--builder-image=old/image=flag/image", "--builder-image=new/image=flag/new"})
-	if err != nil || o.Project != "flag-project" || o.Region != "flag-region" || o.NoPush || o.DryRun || o.BuilderImages["old/image"] != "flag/image" || o.BuilderImages["other/image"] != "env/other" || o.BuilderImages["new/image"] != "flag/new" {
+	o, err = parseCLI([]string{"builds", "submit", "--project=flag-project", "--region", "flag-region", "--no-push=false", "--dry-run=false"})
+	if err != nil || o.Project != "flag-project" || o.Region != "flag-region" || o.NoPush || o.DryRun {
 		t.Fatalf("flag overrides: %+v, %v", o, err)
 	}
 }
 
 func TestInvalidEnvironment(t *testing.T) {
-	for _, name := range []string{"GCLOUD_LOCAL_NO_PUSH", "GCLOUD_LOCAL_DRY_RUN", "GCLOUD_LOCAL_BUILDER_IMAGES"} {
+	for _, name := range []string{"GCLOUD_LOCAL_NO_PUSH", "GCLOUD_LOCAL_DRY_RUN"} {
 		t.Setenv(name, "")
 	}
 	for _, tc := range []struct{ name, value string }{
 		{"GCLOUD_LOCAL_NO_PUSH", "maybe"},
 		{"GCLOUD_LOCAL_DRY_RUN", "maybe"},
-		{"GCLOUD_LOCAL_BUILDER_IMAGES", "image"},
-		{"GCLOUD_LOCAL_BUILDER_IMAGES", "=replacement"},
-		{"GCLOUD_LOCAL_BUILDER_IMAGES", "image="},
 	} {
 		t.Run(tc.name+"/"+tc.value, func(t *testing.T) {
 			t.Setenv(tc.name, tc.value)

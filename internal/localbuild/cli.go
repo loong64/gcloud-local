@@ -26,7 +26,6 @@ Execute Cloud Build image steps against a local Docker daemon.
   --dry-run                  Print JSON build plan without running Docker
   --max-concurrent-builds N   Concurrent builds per user/daemon (default 1)
   --timeout DURATION         Total build timeout, e.g. 3600s or 2h
-  --builder-image OLD=NEW     Replace a step image (repeatable)
   --docker-config DIR        Docker login config (default $DOCKER_CONFIG or ~/.docker)
   --docker-socket PATH       Local daemon socket (default /var/run/docker.sock)
   --docker-bin PATH          Docker CLI executable (default docker)
@@ -47,7 +46,7 @@ Environment defaults (explicit flags take precedence):
   GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS  Default for --max-concurrent-builds
   GCLOUD_LOCAL_NO_PUSH       Boolean default for --no-push
   GCLOUD_LOCAL_DRY_RUN       Boolean default for --dry-run
-  GCLOUD_LOCAL_BUILDER_IMAGES  Comma-separated OLD=NEW image replacements
+  GCLOUD_LOCAL_BEFOCE_SCRIPT_LINUX  Commands inside each step container before args/script
 `
 
 // Version can be set at build time using -ldflags "-X gcloud-local/internal/localbuild.Version=...".
@@ -56,8 +55,9 @@ var Version = "dev"
 type CLI struct {
 	MaxConcurrentBuilds                                 int
 	Source, Config, Project, Region, Workspace, Timeout string
+	BeforeScriptLinux                                   string
 	DockerConfig, Socket, Docker, Network               string
-	Substitutions, BuilderImages                        map[string]string
+	Substitutions                                       map[string]string
 	NoPush, DryRun, Help                                bool
 }
 
@@ -92,7 +92,7 @@ func validateVerbosity(value string) error {
 }
 
 func parseCLI(args []string) (CLI, error) {
-	o := CLI{MaxConcurrentBuilds: 1, Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}, BuilderImages: map[string]string{}}
+	o := CLI{MaxConcurrentBuilds: 1, Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		o.Help = true
 		return o, nil
@@ -161,7 +161,7 @@ globalFlags:
 			continue
 		}
 		switch key {
-		case "--max-concurrent-builds", "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--builder-image", "--verbosity":
+		case "--max-concurrent-builds", "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--verbosity":
 		default:
 			return o, fmt.Errorf("unsupported flag %s", key)
 		}
@@ -212,12 +212,6 @@ globalFlags:
 			for k, v := range m {
 				o.Substitutions[k] = v
 			}
-		case "--builder-image":
-			k, v, ok := strings.Cut(v, "=")
-			if !ok || k == "" || v == "" {
-				return o, fmt.Errorf("builder-image expects OLD=NEW")
-			}
-			o.BuilderImages[k] = v
 		}
 	}
 	if !o.Help {

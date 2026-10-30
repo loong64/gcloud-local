@@ -1,6 +1,6 @@
 timeout: 300s
 steps:
-  - name: gcr.io/cloud-builders/docker
+  - name: ghcr.io/loong64/cloud-builders/docker
     id: prepare
     entrypoint: bash
     env: ['MESSAGE=${_MESSAGE}']
@@ -12,7 +12,7 @@ steps:
         printf 'FROM scratch\nCOPY message.txt /message.txt\n' > Dockerfile
         docker version
         docker buildx version
-  - name: gcr.io/cloud-builders/docker
+  - name: ghcr.io/loong64/cloud-builders/docker
     id: build
     args: ['build', '-t', '${_IMAGE}', '.']
 substitutions:
