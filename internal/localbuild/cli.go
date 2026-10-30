@@ -24,6 +24,7 @@ Execute Cloud Build image steps against a local Docker daemon.
   --workspace-root DIR       Repository root for archives without .git
   --no-push                  Skip final and nested docker/manifest pushes
   --dry-run                  Print JSON build plan without running Docker
+  --max-concurrent-builds N   Concurrent builds per user/daemon (default 1)
   --timeout DURATION         Total build timeout, e.g. 3600s or 2h
   --builder-image OLD=NEW     Replace a step image (repeatable)
   --docker-config DIR        Docker login config (default $DOCKER_CONFIG or ~/.docker)
@@ -36,12 +37,14 @@ Execute Cloud Build image steps against a local Docker daemon.
   --help, -h                 Show help
 
 Only local synchronous builds are supported. Unsupported config fields fail explicitly.
-Steps run sequentially; waitFor dependencies are validated. Registry login must be
-performed using docker login before submission.
+Steps run sequentially; waitFor dependencies are validated. Concurrent submissions
+share build slots across processes; queue time counts toward the build timeout.
+Registry login must be performed using docker login before submission.
 
 Environment defaults (explicit flags take precedence):
   CLOUDSDK_CORE_PROJECT      Default PROJECT_ID
   CLOUDSDK_BUILDS_REGION     Default LOCATION
+  GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS  Default for --max-concurrent-builds
   GCLOUD_LOCAL_NO_PUSH       Boolean default for --no-push
   GCLOUD_LOCAL_DRY_RUN       Boolean default for --dry-run
   GCLOUD_LOCAL_BUILDER_IMAGES  Comma-separated OLD=NEW image replacements
@@ -51,6 +54,7 @@ Environment defaults (explicit flags take precedence):
 var Version = "dev"
 
 type CLI struct {
+	MaxConcurrentBuilds                                 int
 	Source, Config, Project, Region, Workspace, Timeout string
 	DockerConfig, Socket, Docker, Network               string
 	Substitutions, BuilderImages                        map[string]string
@@ -88,7 +92,7 @@ func validateVerbosity(value string) error {
 }
 
 func parseCLI(args []string) (CLI, error) {
-	o := CLI{Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}, BuilderImages: map[string]string{}}
+	o := CLI{MaxConcurrentBuilds: 1, Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}, BuilderImages: map[string]string{}}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		o.Help = true
 		return o, nil
@@ -157,7 +161,7 @@ globalFlags:
 			continue
 		}
 		switch key {
-		case "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--builder-image", "--verbosity":
+		case "--max-concurrent-builds", "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--builder-image", "--verbosity":
 		default:
 			return o, fmt.Errorf("unsupported flag %s", key)
 		}
@@ -176,6 +180,12 @@ globalFlags:
 			if err := validateVerbosity(v); err != nil {
 				return o, err
 			}
+		case "--max-concurrent-builds":
+			n, err := positiveConcurrency(v)
+			if err != nil {
+				return o, fmt.Errorf("%s: %w", key, err)
+			}
+			o.MaxConcurrentBuilds = n
 		case "--config":
 			o.Config = v
 		case "--project":

@@ -132,6 +132,16 @@ func (r *runner) run(ctx context.Context, p Plan) error {
 	if st, err := os.Stat(socket); err != nil || st.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("local Docker socket unavailable: %s", socket)
 	}
+	// Resolve aliases so callers using different paths to the same socket share slots.
+	canonicalSocket, err := filepath.EvalSymlinks(socket)
+	if err != nil {
+		return err
+	}
+	release, err := acquireBuildSlot(ctx, buildLockDir(canonicalSocket), r.opts.MaxConcurrentBuilds, r.logs)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if strings.Contains(p.Workspace, ",") || strings.Contains(socket, ",") {
 		return fmt.Errorf("Docker bind mount paths cannot contain commas")
 	}

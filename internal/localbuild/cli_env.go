@@ -35,6 +35,13 @@ func applyEnvironment(o *CLI, explicit map[string]bool) error {
 			*setting.target = parsed
 		}
 	}
+	if value := os.Getenv("GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS"); value != "" && !explicit["--max-concurrent-builds"] {
+		n, err := positiveConcurrency(value)
+		if err != nil {
+			return fmt.Errorf("GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS: %w", err)
+		}
+		o.MaxConcurrentBuilds = n
+	}
 	if value := os.Getenv("GCLOUD_LOCAL_BUILDER_IMAGES"); value != "" {
 		images, err := parseAssignments(value)
 		if err != nil {
@@ -50,4 +57,12 @@ func applyEnvironment(o *CLI, explicit map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+func positiveConcurrency(value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("expected a positive integer, got %q", value)
+	}
+	return n, nil
 }
