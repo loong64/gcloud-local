@@ -67,7 +67,7 @@ func (r *runner) cleanup(args ...string) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.opts.Docker, r.dockerArgs(args)...)
 	if data, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(r.logs, "gcloud-local: cleanup %v failed: %v %s\n", args, err, data)
+		fmt.Fprintf(r.logs, "WARNING: build [%s]: cleanup %v failed: %v %s\n", r.id, args, err, data)
 	}
 }
 func (r *runner) prepare() error {
@@ -144,18 +144,23 @@ func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 	if err != nil {
 		return err
 	}
-	release, err := acquireBuildSlot(ctx, buildLockDir(canonicalSocket), r.opts.MaxConcurrentBuilds, r.logs)
+	created := time.Now()
+	var started time.Time
+	defer func() {
+		runErr = finishBuildLog(r.out, r.logs, p, r.id, created, started, time.Now(), runErr)
+	}()
+	fmt.Fprintf(r.logs, "Created [local/%s].\n", r.id)
+	fmt.Fprintf(r.logs, "Waiting for build to complete. Streaming local Docker logs for build [%s].\n", r.id)
+	queueLogs := &lineWriter{dst: r.logs, mu: &sync.Mutex{}, prefix: fmt.Sprintf("Build [%s]: ", r.id)}
+	release, err := acquireBuildSlot(ctx, buildLockDir(canonicalSocket), r.opts.MaxConcurrentBuilds, queueLogs)
 	if err != nil {
 		return err
 	}
 	defer release()
+	started = time.Now()
 	// Like gcloud builds submit, stream build output to stdout.
+	fmt.Fprintln(r.out, buildLogBoundary(" LOCAL BUILD OUTPUT: "+r.id+" "))
 	fmt.Fprintf(r.out, "starting build %q\n\n", r.id)
-	defer func() {
-		if runErr != nil {
-			fmt.Fprintln(r.out, "ERROR")
-		}
-	}()
 	if strings.Contains(p.Workspace, ",") || strings.Contains(socket, ",") {
 		return fmt.Errorf("Docker bind mount paths cannot contain commas")
 	}
@@ -246,7 +251,7 @@ func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 		return fmt.Errorf("failed to find declared images after build steps: %s", strings.Join(missing, ", "))
 	}
 	if r.opts.NoPush {
-		fmt.Fprintln(r.logs, "gcloud-local: --no-push skipped final images push")
+		fmt.Fprintf(r.logs, "Build [%s]: --no-push skipped final images push\n", r.id)
 	} else {
 		fmt.Fprintln(r.out, "PUSH")
 		for _, image := range p.Images {

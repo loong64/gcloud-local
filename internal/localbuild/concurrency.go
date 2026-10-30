@@ -46,7 +46,7 @@ func acquireBuildSlot(ctx context.Context, dir string, limit int, logs io.Writer
 			}
 		}
 		if !waiting {
-			fmt.Fprintf(logs, "gcloud-local: waiting for build slot (max concurrent builds: %d)\n", limit)
+			fmt.Fprintf(logs, "Queued locally: waiting for build slot (max concurrent builds: %d).\n", limit)
 			waiting = true
 		}
 		timer := time.NewTimer(100 * time.Millisecond)

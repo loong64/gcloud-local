@@ -145,10 +145,13 @@ func TestRunnerWaitsForBuildSlot(t *testing.T) {
 	opts := testCLI()
 	opts.Socket = socket
 	opts.Docker = "/does/not/exist"
-	var logs strings.Builder
-	r := runner{opts: opts, logs: &logs, out: io.Discard}
+	var logs, out strings.Builder
+	r := runner{opts: opts, logs: &logs, out: &out, id: "queued-build"}
 	err = r.run(context.Background(), Plan{Timeout: 150 * time.Millisecond})
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(logs.String(), "waiting for build slot") || r.temp != "" {
 		t.Fatalf("runner did not queue before execution: temp=%q, err=%v, logs=%s", r.temp, err, &logs)
+	}
+	if !strings.Contains(logs.String(), "Build [queued-build]: Queued locally: waiting for build slot") || strings.Contains(out.String(), "BUILD OUTPUT") || strings.Contains(out.String(), "SUCCESS") {
+		t.Fatalf("queued build logging is misleading: out=%s, logs=%s", &out, &logs)
 	}
 }

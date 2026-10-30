@@ -2,12 +2,15 @@ package localbuild
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLineWriter(t *testing.T) {
@@ -90,9 +93,14 @@ esac
 				t.Fatalf("build output leaked to stderr: %s", &logs)
 			}
 			got := out.String()
-			for _, want := range []string{"starting build \"test\"\n\nBUILD\n", "Already have image: image\n", "hello\n", "last\n", "diagnostic\n"} {
+			for _, want := range []string{" LOCAL BUILD OUTPUT: test ", "starting build \"test\"\n\nBUILD\n", "Already have image: image\n", "hello\n", "last\n", "diagnostic\n"} {
 				if !strings.Contains(got, want) {
 					t.Fatalf("missing %q in %s", want, got)
+				}
+			}
+			for _, want := range []string{"Created [local/test].\n", "Waiting for build to complete.", "Streaming local Docker logs for build [test]."} {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("missing status %q in %s", want, &logs)
 				}
 			}
 			if tc.count > 1 {
@@ -108,11 +116,21 @@ esac
 				t.Fatal(got)
 			}
 			if failed {
-				if !strings.HasSuffix(got, "ERROR\n") || strings.Contains(got, "DONE\n") || strings.Contains(got, "Starting Step #1") {
+				if !strings.Contains(got, "ERROR\n"+buildLogBoundary("")) || strings.Contains(got, "DONE\n") || strings.Contains(got, "Starting Step #1") || strings.Contains(got, "CREATE_TIME") {
 					t.Fatal(got)
 				}
-			} else if !strings.HasSuffix(got, "DONE\n") {
-				t.Fatal(got)
+				if !strings.Contains(logs.String(), "BUILD FAILURE: build [test]:") || !strings.Contains(err.Error(), `completed with status "FAILURE"`) {
+					t.Fatalf("missing failure detail: %v, %s", err, &logs)
+				}
+			} else {
+				if !strings.Contains(got, "DONE\n"+buildLogBoundary("")) || !strings.HasSuffix(got, "SUCCESS\n") {
+					t.Fatal(got)
+				}
+				lines := strings.Split(strings.TrimSpace(got), "\n")
+				fields := strings.Fields(lines[len(lines)-1])
+				if len(fields) != 6 || fields[0] != "test" || fields[3] != root || fields[4] != "result:test" || fields[5] != "SUCCESS" {
+					t.Fatalf("bad summary row: %v", fields)
+				}
 			}
 			if tc.allowed && !strings.Contains(got, "WARNING: Step #0") {
 				t.Fatal(got)
@@ -123,6 +141,99 @@ esac
 			if tc.noPush && strings.Contains(got, "PUSH\n") {
 				t.Fatal(got)
 			}
+			if tc.noPush && !strings.Contains(logs.String(), "Build [test]: --no-push skipped final images push") {
+				t.Fatal(logs.String())
+			}
 		})
+	}
+}
+
+func TestSubmissionWorkspaceLogging(t *testing.T) {
+	root := t.TempDir()
+	socket := filepath.Join(root, "docker.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	docker := filepath.Join(root, "docker")
+	config := filepath.Join(root, "cloudbuild.yaml")
+	writeTestFile(t, config, "steps: [{name: image}]", 0600)
+	writeTestFile(t, docker, "#!/bin/sh\nshift 4\n[ \"$1 $2\" != 'image inspect' ] || echo '{}'\nexit 0\n", 0755)
+	for _, verbosity := range []string{"", "info", "debug"} {
+		t.Run(verbosity, func(t *testing.T) {
+			args := []string{"builds", "submit", root, "--config", config, "--no-push", "--docker-bin", docker, "--docker-socket", socket, "--docker-config", root}
+			if verbosity != "" {
+				args = append([]string{"--verbosity=" + verbosity}, args...)
+			}
+			var out, logs strings.Builder
+			if err := Main(context.Background(), args, &out, &logs); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(logs.String(), "source "+root) != (verbosity == "debug") {
+				t.Fatalf("verbosity %q: %s", verbosity, &logs)
+			}
+			if !strings.Contains(logs.String(), "Created [local/local-") || !strings.Contains(out.String(), "SUCCESS\n") {
+				t.Fatalf("submission logs missing: %s\n%s", &logs, &out)
+			}
+		})
+	}
+}
+
+func TestBuildSummary(t *testing.T) {
+	created := time.Date(2026, 10, 30, 12, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	for _, tc := range []struct {
+		plan     Plan
+		duration time.Duration
+		want     []string
+	}{
+		{Plan{}, 0, []string{"2026-10-30T04:00:00+00:00", "0S", "-", "-"}},
+		{Plan{Source: "/tmp/source", Images: []string{"a:test", "b:test"}}, 65 * time.Second, []string{"2026-10-30T04:00:00+00:00", "1M5S", "/tmp/source", "a:test (+1 more)"}},
+		{Plan{Source: "source\nwith\tcontrols"}, time.Hour + 2*time.Minute + 3*time.Second, []string{"2026-10-30T04:00:00+00:00", "1H2M3S", `source\nwith\tcontrols`, "-"}},
+	} {
+		var out strings.Builder
+		printBuildSummary(&out, tc.plan, "test", created, tc.duration)
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 || strings.Join(strings.Fields(lines[0]), " ") != "ID CREATE_TIME DURATION SOURCE IMAGES STATUS" {
+			t.Fatalf("bad summary: %s", &out)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(lines[1], want) {
+				t.Fatalf("missing %q: %s", want, &out)
+			}
+		}
+	}
+}
+
+func TestBuildLogDeadlineAndCancellation(t *testing.T) {
+	for _, cause := range []error{context.DeadlineExceeded, context.Canceled} {
+		for _, running := range []bool{false, true} {
+			var out, logs strings.Builder
+			created := time.Now()
+			var started time.Time
+			if running {
+				started = created.Add(time.Second)
+			}
+			err := finishBuildLog(&out, &logs, Plan{}, "build-id", created, started, created.Add(2*time.Second), cause)
+			status := "CANCELLED"
+			if cause == context.DeadlineExceeded {
+				status = "TIMEOUT"
+				if !strings.Contains(logs.String(), "--timeout=DURATION") {
+					t.Fatal(logs.String())
+				}
+			}
+			if !errors.Is(err, cause) || !strings.Contains(err.Error(), `status "`+status+`"`) || !strings.Contains(logs.String(), "build-id") {
+				t.Fatalf("missing build status/cause: %v, %s", err, &logs)
+			}
+			if strings.Contains(out.String(), "SUCCESS") || (!running && out.Len() > 0) {
+				t.Fatalf("queued or failed build emitted successful output: %s", &out)
+			}
+		}
+	}
+	// Formatting a failed build must not replace the step's exit code/error chain.
+	cause := &stepExitError{&statusError{7, errors.New("step failed")}}
+	err := finishBuildLog(io.Discard, io.Discard, Plan{}, "test", time.Now(), time.Now(), time.Now(), cause)
+	if ExitCode(err) != 7 {
+		t.Fatalf("exit code lost in build status: %v", err)
 	}
 }

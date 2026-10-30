@@ -35,7 +35,7 @@ Execute Cloud Build image steps against a local Docker daemon.
   --docker-bin PATH          Docker CLI executable (default docker)
   --network NAME             Step container network (default bridge)
   --quiet, -q                Accepted for gcloud compatibility
-  --verbosity LEVEL          Accepted for gcloud compatibility; logging is unchanged
+  --verbosity LEVEL          gcloud-compatible level; debug includes local workspace details
   --version                  Show build version
   --help, -h                 Show help
 
@@ -62,6 +62,7 @@ type CLI struct {
 	Source, Config, Project, Region, Workspace, Timeout string
 	BeforeScriptLinux                                   string
 	Tag                                                 string
+	Verbosity                                           string
 	DockerConfig, Socket, Docker, Network               string
 	Substitutions                                       map[string]string
 	NoPush, DryRun, Help, NoSource, NoCache             bool
@@ -182,6 +183,7 @@ func parseCLI(args []string) (CLI, error) {
 			if err := validateVerbosity(v); err != nil {
 				return o, err
 			}
+			o.Verbosity = v
 		case "--max-concurrent-builds":
 			n, err := positiveConcurrency(v)
 			if err != nil {
@@ -259,8 +261,11 @@ func parseLeadingGlobals(args []string, o *CLI, explicit map[string]bool) ([]str
 		if key == "--project" {
 			o.Project = value
 			explicit[key] = true
-		} else if err := validateVerbosity(value); err != nil {
-			return nil, err
+		} else {
+			if err := validateVerbosity(value); err != nil {
+				return nil, err
+			}
+			o.Verbosity = value
 		}
 	}
 	return args, nil
@@ -316,12 +321,14 @@ func Main(ctx context.Context, args []string, out, logs io.Writer) error {
 		return enc.Encode(p)
 	}
 	if c.Options.MachineType != "" || c.Options.DiskSizeGb != "" || c.Options.Logging != "" || c.Options.LogStreamingOption != "" {
-		fmt.Fprintln(logs, "gcloud-local: cloud machine/disk/logging options are ignored; using local resources")
+		fmt.Fprintf(logs, "WARNING: build [%s]: cloud machine/disk/logging options are ignored; using local resources\n", id)
 	}
-	if opts.NoSource {
-		fmt.Fprintln(logs, "gcloud-local: --no-source uses an empty temporary workspace")
-	} else {
-		fmt.Fprintf(logs, "gcloud-local: source %s; workspace %s\n", p.Source, p.Workspace)
+	if opts.Verbosity == "debug" {
+		if opts.NoSource {
+			fmt.Fprintf(logs, "DEBUG: build [%s]: --no-source uses an empty temporary workspace\n", id)
+		} else {
+			fmt.Fprintf(logs, "DEBUG: build [%s]: source %s; workspace %s\n", id, p.Source, p.Workspace)
+		}
 	}
 	r := runner{opts: opts, out: out, logs: logs, id: id}
 	return r.run(ctx, p)
