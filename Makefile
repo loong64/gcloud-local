@@ -12,3 +12,5 @@ integration:
 	GCLOUD_LOCAL_INTEGRATION=1 go test -count=1 -v ./...
 install: build
 	install -Dm755 gcloud-local $(DESTDIR)$(PREFIX)/bin/gcloud-local
+	install -Dm644 LICENSE $(DESTDIR)$(PREFIX)/share/doc/gcloud-local/LICENSE
+	install -Dm644 THIRD_PARTY_NOTICES.md $(DESTDIR)$(PREFIX)/share/doc/gcloud-local/THIRD_PARTY_NOTICES.md

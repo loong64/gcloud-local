@@ -18,3 +18,4 @@ steps:
 substitutions:
   _MESSAGE: local-build-ok
   _IMAGE: gcloud-local-smoke:test
+images: ['${_IMAGE}']

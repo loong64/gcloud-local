@@ -16,6 +16,7 @@ func applyEnvironment(o *CLI, explicit map[string]bool) error {
 	}{
 		{"--project", "CLOUDSDK_CORE_PROJECT", &o.Project},
 		{"--region", "CLOUDSDK_BUILDS_REGION", &o.Region},
+		{"--timeout", "CLOUDSDK_BUILDS_TIMEOUT", &o.Timeout},
 	} {
 		if value := os.Getenv(setting.env); value != "" && !explicit[setting.flag] {
 			*setting.target = value

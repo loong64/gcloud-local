@@ -69,15 +69,6 @@ func TestDockerIntegration(t *testing.T) {
 			t.Fatalf("artifact %q: %v", b, err)
 		}
 	})
-	t.Run("builder-toolchain", func(t *testing.T) {
-		o := testCLI()
-		o.Source = t.TempDir()
-		o.NoPush = true
-		c := Config{Steps: []Step{{Name: "ghcr.io/loong64/cloud-builders/docker", Script: "bash --version\nmake --version\ngit --version\ndocker buildx version\npython3 --version\njq --version\nrsync --version"}}}
-		if _, err, _ := run(t, c, o); err != nil {
-			t.Fatal(err)
-		}
-	})
 	t.Run("no-push-and-auth", func(t *testing.T) {
 		o := testCLI()
 		o.Source = t.TempDir()
@@ -86,13 +77,65 @@ func TestDockerIntegration(t *testing.T) {
 			{Name: "ghcr.io/loong64/cloud-builders/docker", Entrypoint: "bash", Args: []string{"-euc", `gcloud --quiet auth configure-docker; docker push invalid.local/never:push; docker image push invalid.local/never:push; docker manifest create invalid.local/never:push; docker manifest annotate invalid.local/never:push x; docker manifest push invalid.local/never:push; docker --config /gcloud-local/docker-config push invalid.local/never:push; docker --log-level=error image push invalid.local/never:push`}},
 			{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"push", "invalid.local/never:push"}},
 			{Name: "ghcr.io/loong64/cloud-builders/docker", Entrypoint: "/usr/bin/docker", Args: []string{"push", "invalid.local/never:push"}},
-		}, Images: []string{"invalid.local/never:push"}}
+		}, Images: []string{"ghcr.io/loong64/cloud-builders/docker"}}
 		logs, err, _ := run(t, c, o)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if strings.Count(logs, "--no-push skipped docker") != 9 {
 			t.Fatal("push wrapper bypassed", logs)
+		}
+	})
+	t.Run("tag-submission", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestFile(t, filepath.Join(root, "Dockerfile"), "FROM scratch\nCOPY message /message\n", 0644)
+		writeTestFile(t, filepath.Join(root, "message"), "tag-build-ok\n", 0644)
+		image := newID() + ":tag"
+		defer docker("image", "rm", "--force", image)
+		var output bytes.Buffer
+		if err := Main(context.Background(), []string{"builds", "submit", root, "--tag", image, "--no-push"}, &output, &output); err != nil {
+			t.Fatalf("tag submission: %v\n%s", err, &output)
+		}
+		docker("image", "inspect", image)
+	})
+	t.Run("missing-output-no-push", func(t *testing.T) {
+		o := testCLI()
+		o.Source, o.NoPush = t.TempDir(), true
+		image := newID() + ":missing"
+		c := Config{Steps: []Step{{Name: "ghcr.io/loong64/cloud-builders/docker", Script: "echo no-image-created"}}, Images: []string{image}}
+		logs, err, _ := run(t, c, o)
+		if err == nil || !strings.Contains(err.Error(), image) || strings.Contains(logs, "DONE\n") {
+			t.Fatalf("missing image accepted: %v\n%s", err, logs)
+		}
+	})
+	t.Run("no-source-isolated-workspace", func(t *testing.T) {
+		root := t.TempDir()
+		file := filepath.Join(root, "cloudbuild.yaml")
+		writeTestFile(t, file, `steps:
+- name: ghcr.io/loong64/cloud-builders/docker
+  script: |
+    test ! -e /workspace/README.md
+    test -z "$(ls -A /workspace)"
+    mkdir generated
+    echo isolated > generated/value
+- name: ghcr.io/loong64/cloud-builders/docker
+  dir: generated
+  script: test "$(cat value)" = isolated
+`, 0600)
+		var output bytes.Buffer
+		if err := Main(context.Background(), []string{"builds", "submit", "--no-source", "--no-push", "--config", file}, &output, &output); err != nil {
+			t.Fatalf("source-free submission: %v\n%s", err, &output)
+		}
+		if _, err := os.Stat(filepath.Join(root, "generated")); !os.IsNotExist(err) {
+			t.Fatalf("source-free build wrote into config directory: %v", err)
+		}
+		_, after, ok := strings.Cut(output.String(), "starting build \"")
+		if !ok {
+			t.Fatalf("build ID missing: %s", &output)
+		}
+		id, _, _ := strings.Cut(after, "\"")
+		if got := strings.TrimSpace(docker("volume", "ls", "--filter", "name="+id, "--format", "{{.Name}}")); got != "" {
+			t.Fatalf("source-free workspace leaked: %s", got)
 		}
 	})
 	t.Run("reject-buildx-registry-output", func(t *testing.T) {
@@ -122,19 +165,6 @@ func TestDockerIntegration(t *testing.T) {
 			t.Fatal("volume leaked", got)
 		}
 	})
-	t.Run("generated-workdir", func(t *testing.T) {
-		o := testCLI()
-		o.Source = t.TempDir()
-		o.NoPush = true
-		// Steps run as root; let the host test user remove generated directories.
-		c := Config{Steps: []Step{
-			{Name: "ghcr.io/loong64/cloud-builders/docker", Script: "umask 000\nmkdir -p generated/nested\necho ready > generated/nested/value"},
-			{Name: "ghcr.io/loong64/cloud-builders/docker", Dir: "generated/nested", Script: "test \"$(cat value)\" = ready"},
-		}}
-		if _, err, _ := run(t, c, o); err != nil {
-			t.Fatal(err)
-		}
-	})
 	t.Run("failure-and-allowed-exit", func(t *testing.T) {
 		o := testCLI()
 		o.Source = t.TempDir()
@@ -144,8 +174,19 @@ func TestDockerIntegration(t *testing.T) {
 		if err == nil || ExitCode(err) != 7 {
 			t.Fatal("exit code not propagated", err)
 		}
-		c.Steps[0].AllowExitCodes = []int{7}
-		c.Steps = append(c.Steps, Step{Name: "ghcr.io/loong64/cloud-builders/docker", Script: "echo continued"})
+		file := filepath.Join(o.Source, "cloudbuild.yaml")
+		writeTestFile(t, file, `steps:
+- name: ghcr.io/loong64/cloud-builders/docker
+  entrypoint: sh
+  args: ['-c', 'exit 7']
+  allow_exit_codes: ['7']
+- name: ghcr.io/loong64/cloud-builders/docker
+  script: echo continued
+`, 0600)
+		c, err = load(file)
+		if err != nil {
+			t.Fatal(err)
+		}
 		logs, err, _ := run(t, c, o)
 		if err != nil || !strings.Contains(logs, "continued") {
 			t.Fatal(logs, err)

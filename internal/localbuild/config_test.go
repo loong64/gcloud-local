@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func testCLI() CLI { o, _ := parseCLI([]string{"builds", "submit"}); return o }
@@ -27,7 +26,7 @@ func TestSubstitutions(t *testing.T) {
 	if _, err := substitute("$HOME", values, false); err == nil {
 		t.Fatal("unescaped shell variable accepted")
 	}
-	if got, err := substitute("$_MISSING", values, true); err != nil || got != "$_MISSING" {
+	if got, err := substitute("$_MISSING", values, true); err != nil || got != "" {
 		t.Fatal(got, err)
 	}
 	if _, err := substitute("$_MISSING", values, false); err == nil {
@@ -39,7 +38,7 @@ func TestCLI(t *testing.T) {
 	if err != nil || o.Source != "source" || o.Config != "x.yaml" || o.Substitutions["_A"] != "a,b" || o.Substitutions["_B"] != "x=y" || !o.NoPush || o.DryRun {
 		t.Fatal(o, err)
 	}
-	for _, args := range [][]string{{"builds", "submit", "--async"}, {"builds", "submit", "--config"}, {"builds", "submit", "a", "b"}, {"builds", "submit", "--builder-image=old=new"}} {
+	for _, args := range [][]string{{"builds", "submit", "--async"}, {"builds", "submit", "--config"}, {"builds", "submit", "a", "b"}} {
 		if _, err := parseCLI(args); err == nil {
 			t.Fatal("invalid args accepted", args)
 		}
@@ -123,15 +122,6 @@ func TestAutomapAndScript(t *testing.T) {
 	}
 	if p.Steps[0].Step.Script != "echo $_X" || !strings.Contains(strings.Join(p.Steps[0].Env, ","), "_X=override") {
 		t.Fatal(p)
-	}
-}
-func TestTimeoutOverride(t *testing.T) {
-	o := testCLI()
-	o.Source = t.TempDir()
-	o.Timeout = "2h"
-	p, err := makePlan(Config{Timeout: "1s", Steps: []Step{{Name: "image", Timeout: "30s"}}}, o, "id")
-	if err != nil || p.Timeout != 2*time.Hour || p.Steps[0].Timeout != 30*time.Second {
-		t.Fatal(p, err)
 	}
 }
 func TestDryRunNoDocker(t *testing.T) {

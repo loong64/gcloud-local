@@ -36,3 +36,5 @@ gcloud-local builds submit . --dry-run
 - `--no-push` 跳过最终镜像推送及步骤内常见的 Docker push、manifest 命令；拒绝 Buildx 远端输出。绝对路径调用 Docker 或直接调用 registry API 不受其控制。
 - `gcloud auth configure-docker` 使用预先登录的 Docker 凭据，其他嵌套 `gcloud` 命令不受支持。
 - 仅支持本地同步构建，不提供 GCP 身份、云日志、云端 secrets、artifacts 或远程 Docker context。
+
+版权和许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

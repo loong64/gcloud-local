@@ -9,15 +9,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-const usage = `gcloud-local builds submit [SOURCE] --config FILE [OPTIONS]
+const usage = `gcloud-local builds submit [SOURCE] [--config FILE | --tag IMAGE] [OPTIONS]
 
 Execute Cloud Build image steps against a local Docker daemon.
 
   --config FILE              Cloud Build YAML/JSON (default cloudbuild.yaml)
+  --tag IMAGE, -t IMAGE       Build SOURCE/Dockerfile; mutually exclusive with --config
+  --no-source                Build in an empty temporary workspace
+  --no-cache                 Unsupported (requires Kaniko); --tag already disables caching
   --substitutions K=V,...     Overrides; repeatable, supports gcloud ^DELIM^ syntax
   --project ID               PROJECT_ID (default local)
   --region REGION            LOCATION (default local)
@@ -43,6 +47,7 @@ Registry login must be performed using docker login before submission.
 Environment defaults (explicit flags take precedence):
   CLOUDSDK_CORE_PROJECT      Default PROJECT_ID
   CLOUDSDK_BUILDS_REGION     Default LOCATION
+  CLOUDSDK_BUILDS_TIMEOUT    Default build timeout
   GCLOUD_LOCAL_MAX_CONCURRENT_BUILDS  Default for --max-concurrent-builds
   GCLOUD_LOCAL_NO_PUSH       Boolean default for --no-push
   GCLOUD_LOCAL_DRY_RUN       Boolean default for --dry-run
@@ -56,22 +61,29 @@ type CLI struct {
 	MaxConcurrentBuilds                                 int
 	Source, Config, Project, Region, Workspace, Timeout string
 	BeforeScriptLinux                                   string
+	Tag                                                 string
 	DockerConfig, Socket, Docker, Network               string
 	Substitutions                                       map[string]string
-	NoPush, DryRun, Help                                bool
+	NoPush, DryRun, Help, NoSource, NoCache             bool
 }
 
 func parseAssignments(s string) (map[string]string, error) {
 	sep := ","
 	if strings.HasPrefix(s, "^") {
-		end := strings.Index(s[1:], "^")
-		if end < 1 {
-			return nil, fmt.Errorf("invalid custom delimiter")
+		if delimiter, rest, ok := strings.Cut(s[1:], "^"); ok {
+			if delimiter == "" {
+				return nil, fmt.Errorf("invalid custom delimiter")
+			}
+			sep, s = delimiter, rest
 		}
-		sep = s[1 : 1+end]
-		s = s[2+end:]
 	}
 	result := map[string]string{}
+	if s == "" {
+		return result, nil
+	}
+	// ArgList._SplitOnDelim ignores one trailing delimiter, but not empty
+	// interior entries. Values and quotation marks are preserved by ArgDict.
+	s = strings.TrimSuffix(s, sep)
 	for _, pair := range strings.Split(s, sep) {
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok || k == "" {
@@ -93,39 +105,24 @@ func validateVerbosity(value string) error {
 
 func parseCLI(args []string) (CLI, error) {
 	o := CLI{MaxConcurrentBuilds: 1, Source: ".", Config: "cloudbuild.yaml", Project: "local", Region: "local", Socket: "/var/run/docker.sock", Docker: "docker", Network: "bridge", Substitutions: map[string]string{}}
+	explicit := map[string]bool{}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		o.Help = true
 		return o, nil
 	}
-	// gcloud accepts compatibility flags before or after the command.
-globalFlags:
-	for len(args) > 0 {
-		key, value, hasValue := strings.Cut(args[0], "=")
-		switch key {
-		case "--quiet", "-q":
-			args = args[1:]
-		case "--verbosity":
-			if !hasValue {
-				if len(args) < 2 {
-					return o, fmt.Errorf("missing value for %s", key)
-				}
-				value = args[1]
-				args = args[1:]
-			}
-			if err := validateVerbosity(value); err != nil {
-				return o, err
-			}
-			args = args[1:]
-		default:
-			break globalFlags
+	// Global flags may precede either command group, as well as follow submit.
+	for _, command := range []string{"builds", "submit"} {
+		var err error
+		args, err = parseLeadingGlobals(args, &o, explicit)
+		if err != nil {
+			return o, err
 		}
+		if len(args) == 0 || args[0] != command {
+			return o, fmt.Errorf("expected builds submit; run gcloud-local --help")
+		}
+		args = args[1:]
 	}
-	if len(args) < 2 || args[0] != "builds" || args[1] != "submit" {
-		return o, fmt.Errorf("expected builds submit; run gcloud-local --help")
-	}
-	args = args[2:]
 	sourceSet := false
-	explicit := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
@@ -144,7 +141,7 @@ globalFlags:
 			continue
 		case "--quiet", "-q":
 			continue
-		case "--no-push", "--dry-run":
+		case "--no-push", "--dry-run", "--no-source", "--no-cache":
 			b := true
 			if has {
 				var err error
@@ -153,15 +150,20 @@ globalFlags:
 					return o, err
 				}
 			}
-			if key == "--no-push" {
+			switch key {
+			case "--no-push":
 				o.NoPush = b
-			} else {
+			case "--dry-run":
 				o.DryRun = b
+			case "--no-source":
+				o.NoSource = b
+			case "--no-cache":
+				o.NoCache = b
 			}
 			continue
 		}
 		switch key {
-		case "--max-concurrent-builds", "--config", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--verbosity":
+		case "--max-concurrent-builds", "--config", "--tag", "-t", "--project", "--region", "--workspace-root", "--timeout", "--docker-config", "--docker-socket", "--docker-bin", "--network", "--substitutions", "--verbosity":
 		default:
 			return o, fmt.Errorf("unsupported flag %s", key)
 		}
@@ -172,7 +174,7 @@ globalFlags:
 			}
 			v = args[i]
 		}
-		if v == "" {
+		if v == "" && key != "--substitutions" {
 			return o, fmt.Errorf("empty value for %s", key)
 		}
 		switch key {
@@ -188,6 +190,8 @@ globalFlags:
 			o.MaxConcurrentBuilds = n
 		case "--config":
 			o.Config = v
+		case "--tag", "-t":
+			o.Tag = v
 		case "--project":
 			o.Project = v
 		case "--region":
@@ -215,11 +219,51 @@ globalFlags:
 		}
 	}
 	if !o.Help {
+		if o.NoSource && (sourceSet || o.Workspace != "" || o.Tag != "") {
+			return o, fmt.Errorf("--no-source cannot be combined with SOURCE, --workspace-root or --tag in local builds")
+		}
+		if o.NoCache {
+			return o, fmt.Errorf("--no-cache requires Kaniko, which is unsupported; Docker builds generated by --tag already disable caching")
+		}
+		if o.Tag != "" && explicit["--config"] {
+			return o, fmt.Errorf("--tag and --config are mutually exclusive")
+		}
 		if err := applyEnvironment(&o, explicit); err != nil {
 			return o, err
 		}
 	}
 	return o, nil
+}
+
+func parseLeadingGlobals(args []string, o *CLI, explicit map[string]bool) ([]string, error) {
+	for len(args) > 0 {
+		key, value, hasValue := strings.Cut(args[0], "=")
+		switch key {
+		case "--quiet", "-q":
+			args = args[1:]
+			continue
+		case "--project", "--verbosity":
+		default:
+			return args, nil
+		}
+		args = args[1:]
+		if !hasValue {
+			if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+				return nil, fmt.Errorf("missing value for %s", key)
+			}
+			value, args = args[0], args[1:]
+		}
+		if value == "" {
+			return nil, fmt.Errorf("empty value for %s", key)
+		}
+		if key == "--project" {
+			o.Project = value
+			explicit[key] = true
+		} else if err := validateVerbosity(value); err != nil {
+			return nil, err
+		}
+	}
+	return args, nil
 }
 
 type statusError struct {
@@ -250,7 +294,7 @@ func Main(ctx context.Context, args []string, out, logs io.Writer) error {
 		fmt.Fprint(out, usage)
 		return nil
 	}
-	c, err := load(opts.Config)
+	c, err := submissionConfig(opts)
 	if err != nil {
 		return err
 	}
@@ -274,9 +318,30 @@ func Main(ctx context.Context, args []string, out, logs io.Writer) error {
 	if c.Options.MachineType != "" || c.Options.DiskSizeGb != "" || c.Options.Logging != "" || c.Options.LogStreamingOption != "" {
 		fmt.Fprintln(logs, "gcloud-local: cloud machine/disk/logging options are ignored; using local resources")
 	}
-	fmt.Fprintf(logs, "gcloud-local: source %s; workspace %s\n", p.Source, p.Workspace)
+	if opts.NoSource {
+		fmt.Fprintln(logs, "gcloud-local: --no-source uses an empty temporary workspace")
+	} else {
+		fmt.Fprintf(logs, "gcloud-local: source %s; workspace %s\n", p.Source, p.Workspace)
+	}
 	r := runner{opts: opts, out: out, logs: logs, id: id}
 	return r.run(ctx, p)
+}
+
+// Like the SDK's builds/submit_util.py, --tag synthesizes a Docker build
+// configuration. Preserve its --no-cache default, replacing the cloud-only
+// internal builder/network with a public Docker builder and local networking.
+func submissionConfig(opts CLI) (Config, error) {
+	if opts.Tag == "" {
+		return load(opts.Config)
+	}
+	file := filepath.Join(opts.Source, "Dockerfile")
+	if st, err := os.Stat(file); err != nil || !st.Mode().IsRegular() {
+		return Config{}, fmt.Errorf("Dockerfile required in source when specifying --tag: %s", file)
+	}
+	return Config{
+		Steps:  []Step{{Name: "gcr.io/cloud-builders/docker", Entrypoint: "docker", Args: []string{"build", "--no-cache", "-t", opts.Tag, "."}}},
+		Images: []string{opts.Tag},
+	}, nil
 }
 
 func dockerConfigDir(o CLI) string {

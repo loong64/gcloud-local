@@ -20,10 +20,11 @@ type stepExitError struct{ *statusError }
 func (e *stepExitError) Unwrap() error { return e.statusError }
 
 type runner struct {
-	opts      CLI
-	out, logs io.Writer
-	id, temp  string
-	prefix    string
+	opts            CLI
+	out, logs       io.Writer
+	id, temp        string
+	prefix          string
+	workspaceVolume string
 }
 
 func (r *runner) dockerArgs(args []string) []string {
@@ -165,6 +166,17 @@ func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 		return err
 	}
 	defer os.RemoveAll(r.temp)
+	if p.NoSource {
+		// Keep root-owned build output in a Docker volume so cleanup works
+		// even when the host CLI runs as an unprivileged user.
+		r.workspaceVolume = r.id
+		setup := *r
+		setup.out = io.Discard
+		if err := setup.command(ctx, "", "volume", "create", r.workspaceVolume); err != nil {
+			return err
+		}
+		defer r.cleanup("volume", "rm", "--force", r.workspaceVolume)
+	}
 	volumes := map[string]string{}
 	for _, s := range p.Steps {
 		for _, v := range s.Step.Volumes {
@@ -217,6 +229,22 @@ func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 			fmt.Fprintf(r.out, "Finished %s\n", label)
 		}
 	}
+	// Verify local outputs before pushing. This implements local execution;
+	// gcloud itself submits the images list for Cloud Build to produce/push.
+	var missing []string
+	verifyRunner := *r
+	verifyRunner.logs = r.out
+	for _, image := range p.Images {
+		if _, err := verifyRunner.capture(ctx, "image", "inspect", image); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			missing = append(missing, image)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("failed to find declared images after build steps: %s", strings.Join(missing, ", "))
+	}
 	if r.opts.NoPush {
 		fmt.Fprintln(r.logs, "gcloud-local: --no-push skipped final images push")
 	} else {
@@ -234,12 +262,14 @@ func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 	return nil
 }
 func (r *runner) step(ctx context.Context, index int, s StepPlan, root string, volumes map[string]string) error {
-	work := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(s.Workdir, "/workspace/")))
-	if s.Workdir == "/workspace" {
-		work = root
-	}
-	if _, err := resolveWorkdir(root, work); err != nil || !existingDir(work) {
-		return fmt.Errorf("step %d: directory %q is unavailable inside workspace", index, s.Workdir)
+	if r.workspaceVolume == "" {
+		work := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(s.Workdir, "/workspace/")))
+		if s.Workdir == "/workspace" {
+			work = root
+		}
+		if _, err := resolveWorkdir(root, work); err != nil || !existingDir(work) {
+			return fmt.Errorf("step %d: directory %q is unavailable inside workspace", index, s.Workdir)
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
@@ -267,8 +297,12 @@ func (r *runner) step(ctx context.Context, index int, s StepPlan, root string, v
 		}
 	}
 	name := fmt.Sprintf("%s-step-%d", r.id, index)
+	workspaceMount := bind(root, "/workspace", false)
+	if r.workspaceVolume != "" {
+		workspaceMount = "type=volume,src=" + r.workspaceVolume + ",dst=/workspace,volume-nocopy"
+	}
 	args := []string{"run", "--rm", "--user", "0:0", "--name", name, "--network", r.opts.Network,
-		"--mount", bind(root, "/workspace", false), "--mount", bind(r.opts.Socket, "/var/run/docker.sock", false),
+		"--mount", workspaceMount, "--mount", bind(r.opts.Socket, "/var/run/docker.sock", false),
 		"--mount", bind(filepath.Join(r.temp, "bin"), "/gcloud-local/bin", true),
 		"--mount", bind(filepath.Join(r.temp, "docker-config"), "/gcloud-local/docker-config", false),
 		"--mount", bind(filepath.Join(r.temp, "home"), "/builder/home", false), "--workdir", s.Workdir,

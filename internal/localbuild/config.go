@@ -1,12 +1,13 @@
 package localbuild
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -52,10 +53,12 @@ type Config struct {
 	Tags          []string          `yaml:"tags"`
 }
 type Plan struct {
+	NoSource  bool          `json:"noSource,omitempty"`
 	Source    string        `json:"source"`
 	Workspace string        `json:"workspace"`
 	Steps     []StepPlan    `json:"steps"`
 	Images    []string      `json:"images"`
+	Tags      []string      `json:"tags,omitempty"`
 	Timeout   time.Duration `json:"timeout"`
 }
 type StepPlan struct {
@@ -66,9 +69,6 @@ type StepPlan struct {
 	Timeout time.Duration `json:"timeout"`
 }
 
-var userKey = regexp.MustCompile(`^_[A-Z0-9_]+$`)
-var token = regexp.MustCompile(`\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
-
 func load(filename string) (Config, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -76,14 +76,34 @@ func load(filename string) (Config, error) {
 	}
 	defer f.Close()
 	dec := yaml.NewDecoder(f)
-	dec.KnownFields(true)
-	var c Config
-	if err := dec.Decode(&c); err != nil {
-		return c, fmt.Errorf("config: %w (unsupported Cloud Build features must be removed explicitly)", err)
+	var document yaml.Node
+	if err := dec.Decode(&document); err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
-		return c, fmt.Errorf("config must contain exactly one YAML document")
+		return Config{}, fmt.Errorf("config must contain exactly one YAML document")
+	}
+	// Resolve aliases without round-tripping through Go scalars: 7.0 must
+	// remain a float and a shared quoted scalar may have different field types.
+	expanded, err := expandConfigAliases(&document, map[*yaml.Node]bool{})
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	document = *expanded
+	normalizeConfigKeys(&document)
+	if err := normalizeConfigTypes(&document, reflect.TypeOf(Config{}), "", true); err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	data, err := yaml.Marshal(&document)
+	if err != nil {
+		return Config{}, err
+	}
+	strict := yaml.NewDecoder(bytes.NewReader(data))
+	strict.KnownFields(true)
+	var c Config
+	if err := strict.Decode(&c); err != nil {
+		return c, fmt.Errorf("config: %w (unsupported Cloud Build features must be removed explicitly)", err)
 	}
 	if len(c.Steps) == 0 {
 		return c, fmt.Errorf("config has no steps")
@@ -91,33 +111,15 @@ func load(filename string) (Config, error) {
 	return c, nil
 }
 
-func substitute(s string, values map[string]string, loose bool) (string, error) {
-	var err error
-	result := token.ReplaceAllStringFunc(s, func(t string) string {
-		if t == "$$" {
-			return "$"
-		}
-		key := strings.TrimSuffix(strings.TrimPrefix(t, "${"), "}")
-		if !strings.HasPrefix(t, "${") {
-			key = t[1:]
-		}
-		if v, ok := values[key]; ok {
-			return v
-		}
-		if loose && userKey.MatchString(key) {
-			return t
-		}
-		err = fmt.Errorf("unknown substitution %s; shell variables must use $$", t)
-		return t
-	})
-	return result, err
-}
-
 func duration(s string, fallback time.Duration) (time.Duration, error) {
 	if s == "" {
 		return fallback, nil
 	}
 	d, err := time.ParseDuration(s)
+	if err != nil {
+		// gcloud's --timeout treats a value without a unit as seconds.
+		d, err = time.ParseDuration(s + "s")
+	}
 	if err != nil || d <= 0 {
 		return 0, fmt.Errorf("invalid timeout %q", s)
 	}
@@ -177,59 +179,70 @@ func workspace(source, explicit string) (string, error) {
 }
 
 func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
-	source, err := filepath.Abs(opts.Source)
-	if err != nil {
-		return Plan{}, err
+	if len(c.Steps) == 0 {
+		return Plan{}, fmt.Errorf("config has no steps")
 	}
-	source, err = filepath.EvalSymlinks(source)
-	if err != nil || !existingDir(source) {
-		return Plan{}, fmt.Errorf("source must be an existing local directory: %s", opts.Source)
+	var source, root string
+	var err error
+	if opts.NoSource {
+		// A virtual root is sufficient for dry runs; the runner allocates an
+		// empty workspace only when executing the build.
+		source, root = "/workspace", "/workspace"
+	} else {
+		source, err = filepath.Abs(opts.Source)
+		if err != nil {
+			return Plan{}, err
+		}
+		source, err = filepath.EvalSymlinks(source)
+		if err != nil || !existingDir(source) {
+			return Plan{}, fmt.Errorf("source must be an existing local directory: %s", opts.Source)
+		}
+		root, err = workspace(source, opts.Workspace)
+		if err != nil {
+			return Plan{}, err
+		}
 	}
-	root, err := workspace(source, opts.Workspace)
-	if err != nil {
-		return Plan{}, err
+	p := Plan{Source: source, Workspace: root, NoSource: opts.NoSource}
+	if opts.NoSource {
+		p.Source, p.Workspace = "", ""
 	}
-	p := Plan{Source: source, Workspace: root}
 	timeout := c.Timeout
 	if opts.Timeout != "" {
 		timeout = opts.Timeout
 	}
-	p.Timeout, err = duration(timeout, 10*time.Minute)
+	p.Timeout, err = duration(timeout, time.Hour)
+	if opts.Timeout != "" {
+		p.Timeout, err = sdkTimeout(opts.Timeout)
+	}
 	if err != nil {
 		return p, err
 	}
-	values := map[string]string{"PROJECT_ID": opts.Project, "PROJECT_NUMBER": "", "BUILD_ID": buildID, "LOCATION": opts.Region}
-	for _, k := range []string{"TRIGGER_NAME", "COMMIT_SHA", "REVISION_ID", "SHORT_SHA", "REPO_NAME", "REPO_FULL_NAME", "BRANCH_NAME", "TAG_NAME", "REF_NAME", "TRIGGER_BUILD_CONFIG_PATH", "SERVICE_ACCOUNT_EMAIL", "SERVICE_ACCOUNT", "_HEAD_BRANCH", "_BASE_BRANCH", "_HEAD_REPO_URL", "_PR_NUMBER"} {
-		values[k] = ""
-	}
-	for k, v := range c.Substitutions {
-		if !userKey.MatchString(k) {
-			return p, fmt.Errorf("invalid custom substitution %q", k)
-		}
-		values[k] = v
-	}
-	for k, v := range opts.Substitutions {
-		if !userKey.MatchString(k) {
-			if _, ok := values[k]; !ok || k == "PROJECT_ID" || k == "BUILD_ID" {
-				return p, fmt.Errorf("invalid substitution override %q", k)
-			}
-		}
-		values[k] = v
+	values, custom, err := substitutionValues(c.Substitutions, opts, buildID)
+	if err != nil {
+		return p, err
 	}
 	loose := c.Options.SubstitutionOption == "ALLOW_LOOSE"
 	if c.Options.SubstitutionOption != "" && !loose && c.Options.SubstitutionOption != "MUST_MATCH" {
 		return p, fmt.Errorf("unsupported substitutionOption")
 	}
+	used := map[string]bool{}
 	sub := func(s string) string {
 		if err != nil {
 			return s
 		}
 		var out string
+		for _, t := range templateToken.FindAllString(s, -1) {
+			if t != "$$" {
+				used[templateKey(t)] = true
+			}
+		}
 		out, err = substitute(s, values, loose)
 		return out
 	}
 	ids := map[string]bool{}
 	for i, st := range c.Steps {
+		// Copy args before expansion so repeated planning does not expand config twice.
+		st.Args = append([]string(nil), st.Args...)
 		if st.Name == "" {
 			return p, fmt.Errorf("step %d has no name", i)
 		}
@@ -248,6 +261,11 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 			return p, fmt.Errorf("step %d: script cannot be combined with args/entrypoint", i)
 		}
 		st.Name = sub(st.Name)
+		if err == nil {
+			if e := validateImage(st.Name); e != nil {
+				return p, fmt.Errorf("step %d: %w", i, e)
+			}
+		}
 		st.Dir = sub(st.Dir)
 		st.Entrypoint = sub(st.Entrypoint)
 		for j := range st.Args {
@@ -262,6 +280,7 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 		if automap {
 			for k, v := range values {
 				env[k] = v
+				used[k] = true
 			}
 		}
 		for _, e := range append(append([]string{}, c.Options.Env...), st.Env...) {
@@ -293,7 +312,15 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 				work = filepath.Join(source, filepath.FromSlash(clean))
 			}
 		}
-		resolved, e := resolveWorkdir(root, work)
+		resolved := work
+		var e error
+		if opts.NoSource {
+			if !inside(root, work) {
+				e = fmt.Errorf("directory escapes workspace")
+			}
+		} else {
+			resolved, e = resolveWorkdir(root, work)
+		}
 		if e != nil {
 			return p, fmt.Errorf("step %d: directory %q: %w", i, st.Dir, e)
 		}
@@ -302,16 +329,12 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 		if e != nil {
 			return p, e
 		}
+		if stepTimeout > p.Timeout {
+			return p, fmt.Errorf("step %d: timeout must not exceed build timeout", i)
+		}
 		vols := append(append([]Volume{}, c.Options.Volumes...), st.Volumes...)
-		paths := map[string]bool{}
-		for _, v := range vols {
-			if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`).MatchString(v.Name) || !path.IsAbs(v.Path) || path.Clean(v.Path) != v.Path {
-				return p, fmt.Errorf("invalid volume %+v", v)
-			}
-			if paths[v.Path] || v.Path == "/" || v.Path == "/workspace" || strings.HasPrefix(v.Path, "/workspace/") || v.Path == "/gcloud-local" || strings.HasPrefix(v.Path, "/gcloud-local/") || v.Path == "/root" || strings.HasPrefix(v.Path, "/root/") || v.Path == "/var/run" || v.Path == "/var/run/docker.sock" {
-				return p, fmt.Errorf("conflicting volume path %s", v.Path)
-			}
-			paths[v.Path] = true
+		if e := validateVolumes(vols); e != nil {
+			return p, fmt.Errorf("step %d: %w", i, e)
 		}
 		st.Volumes = vols
 		p.Steps = append(p.Steps, StepPlan{Step: st, Image: st.Name, Workdir: path.Join("/workspace", filepath.ToSlash(rel)), Env: envList, Timeout: stepTimeout})
@@ -319,8 +342,28 @@ func makePlan(c Config, opts CLI, buildID string) (Plan, error) {
 	for _, im := range c.Images {
 		p.Images = append(p.Images, sub(im))
 	}
+	for _, tag := range c.Tags {
+		p.Tags = append(p.Tags, sub(tag))
+	}
 	if err != nil {
 		return p, err
+	}
+	for _, image := range p.Images {
+		if err := validateImage(image); err != nil {
+			return p, err
+		}
+	}
+	if !loose {
+		var unused []string
+		for k := range custom {
+			if !used[k] {
+				unused = append(unused, k)
+			}
+		}
+		sort.Strings(unused)
+		if len(unused) > 0 {
+			return p, fmt.Errorf("unused substitutions: %s; use options.substitutionOption: ALLOW_LOOSE to allow unused keys", strings.Join(unused, ", "))
+		}
 	}
 	return p, nil
 }

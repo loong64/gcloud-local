@@ -36,3 +36,5 @@ Run `docker login` before pushing images. Host credential helpers are unsupporte
 - `--no-push` skips final image pushes and common Docker push and manifest commands within steps; Buildx remote outputs are rejected. Absolute-path Docker calls and direct registry API calls bypass this option.
 - `gcloud auth configure-docker` uses existing Docker credentials. Other nested `gcloud` commands are unsupported.
 - Only local synchronous builds are supported. GCP authentication, cloud logging, cloud secrets, artifacts, and remote Docker contexts are unavailable.
+
+Attribution and licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

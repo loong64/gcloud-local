@@ -1,0 +1,656 @@
+{
+  "sdkVersion": "591.0.0",
+  "assignments": [
+    {
+      "input": "",
+      "result": {}
+    },
+    {
+      "input": "_A=a,bad",
+      "error": true
+    },
+    {
+      "input": "_A=a,",
+      "result": {
+        "_A": "a"
+      }
+    },
+    {
+      "input": "_A=a,,",
+      "error": true
+    },
+    {
+      "input": ",",
+      "error": true
+    },
+    {
+      "input": "^;^_A=a,b;_B=x=y;",
+      "result": {
+        "_A": "a,b",
+        "_B": "x=y"
+      }
+    },
+    {
+      "input": "^::^_A=x::",
+      "result": {
+        "_A": "x"
+      }
+    },
+    {
+      "input": "^^_A=x",
+      "error": true
+    },
+    {
+      "input": "^_A=x",
+      "result": {
+        "^_A": "x"
+      }
+    },
+    {
+      "input": "_A=\" x \"",
+      "result": {
+        "_A": "\" x \""
+      }
+    },
+    {
+      "input": "_A=1,_A=2",
+      "result": {
+        "_A": "2"
+      }
+    },
+    {
+      "input": "_A=",
+      "result": {
+        "_A": ""
+      }
+    },
+    {
+      "input": "=bad",
+      "error": true
+    },
+    {
+      "input": "_A=one\ntwo",
+      "result": {
+        "_A": "one\ntwo"
+      }
+    },
+    {
+      "input": "^;^",
+      "result": {}
+    },
+    {
+      "input": "_A=a, _B=b",
+      "result": {
+        "_A": "a",
+        " _B": "b"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "yaml": "steps: [{name: builder}]",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "snake_case",
+      "yaml": "steps:\n- name: builder\n  allow_failure: true\n  allow_exit_codes: [7]\n  wait_for: ['-']\n  automap_substitutions: false\n  env: ['Keep_This=1']\noptions:\n  automap_substitutions: true\n  env: ['Also_Keep_This=2']\nsubstitutions: {_KEEP_THIS: literal}\n",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [
+              "Keep_This=1"
+            ],
+            "waitFor": [
+              "-"
+            ],
+            "allowFailure": true,
+            "allowExitCodes": [
+              7
+            ],
+            "automap": false,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [
+          "Also_Keep_This=2"
+        ],
+        "automap": true,
+        "substitutions": {
+          "_KEEP_THIS": "literal"
+        },
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "flag_override",
+      "yaml": "steps: [{name: builder}]\nsubstitutions: {_X: config, _Y: unchanged}",
+      "params": {
+        "_X": "flag",
+        "COMMIT_SHA": "revision"
+      },
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {
+          "COMMIT_SHA": "revision",
+          "_X": "flag",
+          "_Y": "unchanged"
+        },
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "invalid_config_key_before_override",
+      "yaml": "steps: [{name: builder}]\nsubstitutions: {BAD: config}",
+      "params": {
+        "BAD": "override"
+      },
+      "error": true
+    },
+    {
+      "name": "no_steps",
+      "yaml": "steps: []",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "unknown_field",
+      "yaml": "steps: [{name: builder, unsupported: true}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "source_without_no_source",
+      "yaml": "steps: [{name: builder}]\nsource: {storage_source: {bucket: example, object: code.tgz}}",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "non_mapping",
+      "yaml": "- not\n- a mapping",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "map_keys_preserved",
+      "yaml": "steps: [{name: builder, args: [\"$_KEEP_THIS\"]}]\nsubstitutions: {_KEEP_THIS: \"${_NESTED}\"}",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [
+              "$_KEEP_THIS"
+            ],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {
+          "_KEEP_THIS": "${_NESTED}"
+        },
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "tags_preserved",
+      "yaml": "steps: [{name: builder}]\ntags: [\"\", repeat, repeat]",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": [
+          "",
+          "repeat",
+          "repeat"
+        ]
+      }
+    },
+    {
+      "name": "script",
+      "yaml": "steps: [{name: builder, script: \"echo $HOME\"}]\noptions: {substitution_option: ALLOW_LOOSE}",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "echo $HOME",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "json_int64_strings",
+      "yaml": "{\"steps\":[{\"name\":\"builder\",\"allowExitCodes\":[\"7\",\"-1\"]}]}",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [
+              7,
+              -1
+            ],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "yaml_int64_strings",
+      "yaml": "steps: [{name: builder, allow_exit_codes: [\" 7 \", \"1_0\"]}]",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [
+              7,
+              10
+            ],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "int64_fraction_rejected",
+      "yaml": "steps: [{name: builder, allow_exit_codes: [7.0]}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "int64_fraction_string_rejected",
+      "yaml": "steps: [{name: builder, allow_exit_codes: [\"7.0\"]}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "bool_substitution_rejected",
+      "yaml": "steps: [{name: builder}]\nsubstitutions: {_X: true}",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "integer_substitution_rejected",
+      "yaml": "steps: [{name: builder}]\nsubstitutions: {_X: 7}",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "bool_env_rejected",
+      "yaml": "steps: [{name: builder, env: [true]}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "integer_arg_rejected",
+      "yaml": "steps: [{name: builder, args: [7]}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "integer_name_rejected",
+      "yaml": "steps: [{name: 7}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "null_arg_rejected",
+      "yaml": "steps: [{name: builder, args: [null]}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "quoted_bool_rejected",
+      "yaml": "steps: [{name: builder, allowFailure: \"false\"}]",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "disk_size_integer_string",
+      "yaml": "steps: [{name: builder}]\noptions: {disk_size_gb: \"7\"}",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "disk_size_float_rejected",
+      "yaml": "steps: [{name: builder}]\noptions: {disk_size_gb: 7.5}",
+      "params": {},
+      "error": true
+    },
+    {
+      "name": "alias_integer_and_string",
+      "yaml": "steps:\n- name: builder\n  args: [&value \"7\"]\n  allow_exit_codes: [*value]",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [
+              "7"
+            ],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": false,
+            "allowExitCodes": [
+              7
+            ],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    },
+    {
+      "name": "merged_snake_case",
+      "yaml": "steps:\n- &base {name: builder, allow_failure: true}\n- <<: *base",
+      "params": {},
+      "result": {
+        "steps": [
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": true,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          },
+          {
+            "name": "builder",
+            "args": [],
+            "env": [],
+            "waitFor": [],
+            "allowFailure": true,
+            "allowExitCodes": [],
+            "automap": null,
+            "script": "",
+            "dir": ""
+          }
+        ],
+        "env": [],
+        "automap": false,
+        "substitutions": {},
+        "timeout": "",
+        "tags": []
+      }
+    }
+  ],
+  "timeouts": [
+    {
+      "input": "120",
+      "seconds": 120
+    },
+    {
+      "input": "2h15m5s",
+      "seconds": 8105
+    },
+    {
+      "input": "PT2H15M5S",
+      "seconds": 8105
+    },
+    {
+      "input": "P1D",
+      "seconds": 86400
+    },
+    {
+      "input": "1.5s",
+      "seconds": 1
+    },
+    {
+      "input": "1500ms",
+      "seconds": 1
+    },
+    {
+      "input": "1m2",
+      "error": true
+    },
+    {
+      "input": "1.5",
+      "error": true
+    },
+    {
+      "input": "0s",
+      "error": true
+    },
+    {
+      "input": "-1s",
+      "error": true
+    },
+    {
+      "input": "1d",
+      "seconds": 86400
+    },
+    {
+      "input": "1w",
+      "seconds": 604800
+    },
+    {
+      "input": "P1W",
+      "seconds": 604800
+    },
+    {
+      "input": "PT1M1H",
+      "seconds": 3660
+    },
+    {
+      "input": "pt1m1h",
+      "seconds": 3660
+    },
+    {
+      "input": "1,5s",
+      "seconds": 1
+    },
+    {
+      "input": "PT2S1H",
+      "seconds": 3602
+    },
+    {
+      "input": "1d2h3m4s",
+      "seconds": 93784
+    },
+    {
+      "input": "P2DT3H",
+      "seconds": 183600
+    },
+    {
+      "input": "1h1h",
+      "seconds": 7200
+    },
+    {
+      "input": "P1DT",
+      "seconds": 86400
+    },
+    {
+      "input": "+120",
+      "seconds": 120
+    },
+    {
+      "input": " 120 ",
+      "seconds": 120
+    },
+    {
+      "input": "1_0",
+      "seconds": 10
+    },
+    {
+      "input": "PT1.99996S",
+      "seconds": 2
+    },
+    {
+      "input": "PT0.99996S",
+      "seconds": 1
+    },
+    {
+      "input": "1Y",
+      "seconds": 31556926
+    },
+    {
+      "input": "P1M",
+      "seconds": 2629744
+    },
+    {
+      "input": "P1Y",
+      "seconds": 31556926
+    },
+    {
+      "input": "P366D",
+      "seconds": 31556926
+    },
+    {
+      "input": "P0",
+      "error": true
+    },
+    {
+      "input": "PT1MT2S",
+      "error": true
+    },
+    {
+      "input": "1TT1s",
+      "error": true
+    },
+    {
+      "input": "2h3xs",
+      "error": true
+    },
+    {
+      "input": "1__0",
+      "error": true
+    }
+  ],
+  "tagArgs": [
+    "docker",
+    "build",
+    "--network",
+    "cloudbuild",
+    "--no-cache",
+    "-t",
+    "gcr.io/example/app:local",
+    "."
+  ]
+}

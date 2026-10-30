@@ -39,7 +39,7 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags "-X 'gcloud-local/internal/localbuild.Version=${VERSION}'" \
               -o "dist/${package}/gcloud-local" ./cmd/gcloud-local
-            cp LICENSE README.md "dist/${package}/"
+            cp LICENSE README.md README.zh-CN.md THIRD_PARTY_NOTICES.md "dist/${package}/"
             tar -C dist -czf "dist/${package}.tar.gz" "$package"
             rm -r "dist/${package}"
           done

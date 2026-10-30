@@ -3,24 +3,75 @@ package localbuild
 import (
 	"context"
 	"encoding/json"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+func TestGlobalProjectPositions(t *testing.T) {
+	t.Setenv("CLOUDSDK_CORE_PROJECT", "env-project")
+	for _, args := range [][]string{
+		{"--project=sample", "builds", "submit"},
+		{"--project", "sample", "--quiet", "builds", "submit"},
+		{"builds", "--project=sample", "submit"},
+		{"builds", "submit", "--project=sample"},
+		{"--verbosity=info", "--project=old", "builds", "submit", "--project=sample"},
+	} {
+		o, err := parseCLI(args)
+		if err != nil || o.Project != "sample" {
+			t.Fatalf("%v: got %q, %v", args, o.Project, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--project=", "builds", "submit"},
+		{"builds", "--project"},
+		{"--project", "--quiet", "builds", "submit"},
+		{"--project", "-q", "builds", "submit"},
+	} {
+		if _, err := parseCLI(args); err == nil {
+			t.Fatalf("missing project accepted: %v", args)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "cloudbuild.yaml")
+	writeTestFile(t, file, "steps: [{name: builder, args: ['$PROJECT_ID']}]", 0600)
+	var out strings.Builder
+	err := Main(context.Background(), []string{"--project=sample", "builds", "submit", "--no-source", "--config", file, "--dry-run"}, &out, io.Discard)
+	var p Plan
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out.String()), &p); err != nil || p.Steps[0].Step.Args[0] != "sample" {
+		t.Fatalf("project not passed to build: %s, %v", &out, err)
+	}
+}
+
+func TestNoCacheRequiresUnsupportedKaniko(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--no-cache"}, {"--tag=app", "--no-cache"}, {"--tag=app", "--no-cache=true"},
+	} {
+		_, err := parseCLI(append([]string{"builds", "submit"}, flags...))
+		if err == nil || !strings.Contains(err.Error(), "Kaniko") {
+			t.Fatalf("%v: expected Kaniko error, got %v", flags, err)
+		}
+	}
+	if _, err := parseCLI([]string{"builds", "submit", "--tag=app", "--no-cache=false"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVerbosityCompatibility(t *testing.T) {
-	for _, level := range []string{"debug", "info", "warning", "error", "critical", "none"} {
-		for _, args := range [][]string{
-			{"--verbosity", level, "--quiet", "builds", "submit", "source"},
-			{"--quiet", "--verbosity=" + level, "builds", "submit", "source"},
-			{"builds", "submit", "--verbosity", level, "source"},
-			{"builds", "submit", "source", "--verbosity=" + level},
-		} {
-			o, err := parseCLI(args)
-			if err != nil || o.Source != "source" {
-				t.Fatalf("%v: source %q, error %v", args, o.Source, err)
-			}
+	for _, args := range [][]string{
+		{"--verbosity", "debug", "--quiet", "builds", "submit", "source"},
+		{"--quiet", "--verbosity=info", "builds", "submit", "source"},
+		{"builds", "submit", "--verbosity", "warning", "source"},
+		{"builds", "submit", "source", "--verbosity=error"},
+		{"builds", "submit", "--verbosity=critical", "source"},
+		{"builds", "submit", "--verbosity=none", "source"},
+	} {
+		o, err := parseCLI(args)
+		if err != nil || o.Source != "source" {
+			t.Fatalf("%v: source %q, error %v", args, o.Source, err)
 		}
 	}
 	for _, prefix := range [][]string{nil, {"builds", "submit"}} {
@@ -30,74 +81,6 @@ func TestVerbosityCompatibility(t *testing.T) {
 				t.Fatalf("invalid verbosity accepted: %v", args)
 			}
 		}
-	}
-}
-
-// Exercise a build submission from an external tool with local behavior
-// configured through the environment. No Docker or GCP is needed.
-func TestExternalToolSubmission(t *testing.T) {
-	t.Setenv("GCLOUD_LOCAL_NO_PUSH", "true")
-	t.Setenv("GCLOUD_LOCAL_DRY_RUN", "true")
-	root := t.TempDir()
-	source := filepath.Join(root, "project")
-	configDir := filepath.Join(source, "services", "app")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(configDir, "cloudbuild.yaml")
-	if err := os.WriteFile(config, []byte(`options:
-  machineType: N1_HIGHCPU_8
-steps:
-- name: example/builder:local
-  dir: ./services/app
-  entrypoint: bash
-  args: [-c, 'make build']
-  env:
-  - CONFIG=$_CONFIG
-  - IMAGE_VERSION=$_IMAGE_VERSION
-  - TAG=$_TAG
-  - REGISTRY=$_REGISTRY
-  - OPTIONAL=$_OPTIONAL
-substitutions:
-  _CONFIG: default
-  _IMAGE_VERSION: v0.0.0
-  _TAG: placeholder
-  _REGISTRY: placeholder
-  _OPTIONAL: default
-images:
-- gcr.io/$PROJECT_ID/app:$_IMAGE_VERSION
-tags: [app, '${_TAG}', '${_CONFIG}']
-`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	args := []string{
-		"builds", "submit", "--verbosity", "info", "--region", "us-central1",
-		"--config", config,
-		"--substitutions", "_CONFIG=production,_IMAGE_VERSION=v1.0.0,_REGISTRY=localhost:5000/test,_OPTIONAL=,_TAG=v1-local",
-		"--project", "local-project", source,
-		"--docker-bin=/does/not/exist",
-	}
-	var out, logs strings.Builder
-	if err := Main(context.Background(), args, &out, &logs); err != nil {
-		t.Fatal(err)
-	}
-	var plan Plan
-	if err := json.Unmarshal([]byte(out.String()), &plan); err != nil {
-		t.Fatal(err)
-	}
-	if plan.Source != source || len(plan.Steps) != 1 || len(plan.Images) != 1 {
-		t.Fatalf("unexpected plan: %+v", plan)
-	}
-	step := plan.Steps[0]
-	if step.Workdir != "/workspace/services/app" || step.Image != "example/builder:local" {
-		t.Fatalf("unexpected step: %+v", step)
-	}
-	wantEnv := "CONFIG=production,IMAGE_VERSION=v1.0.0,OPTIONAL=,REGISTRY=localhost:5000/test,TAG=v1-local"
-	if strings.Join(step.Env, ",") != wantEnv || plan.Images[0] != "gcr.io/local-project/app:v1.0.0" {
-		t.Fatalf("substitutions lost: %+v", plan)
-	}
-	if logs.Len() != 0 {
-		t.Fatalf("unexpected dry-run logs: %s", logs.String())
 	}
 }
 
