@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type runner struct {
 	opts      CLI
 	out, logs io.Writer
 	id, temp  string
+	prefix    string
 }
 
 func (r *runner) dockerArgs(args []string) []string {
@@ -30,12 +32,17 @@ func (r *runner) dockerArgs(args []string) []string {
 
 func (r *runner) command(ctx context.Context, input string, args ...string) error {
 	cmd := exec.CommandContext(ctx, r.opts.Docker, r.dockerArgs(args)...)
-	cmd.Stdout = r.out
-	cmd.Stderr = r.logs
+	var mu sync.Mutex
+	out := &lineWriter{dst: r.out, mu: &mu, prefix: r.prefix}
+	logs := &lineWriter{dst: r.logs, mu: &mu, prefix: r.prefix}
+	cmd.Stdout = out
+	cmd.Stderr = logs
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	outErr, logErr := out.flush(), logs.flush()
+	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("docker %s: %w", args[0], ctx.Err())
 		}
@@ -45,13 +52,14 @@ func (r *runner) command(ctx context.Context, input string, args ...string) erro
 		}
 		return err
 	}
-	return nil
+	return errors.Join(outErr, logErr)
 }
 func (r *runner) capture(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, r.opts.Docker, r.dockerArgs(args)...)
-	cmd.Stderr = r.logs
+	logs := &lineWriter{dst: r.logs, mu: &sync.Mutex{}, prefix: r.prefix}
+	cmd.Stderr = logs
 	b, err := cmd.Output()
-	return string(b), err
+	return string(b), errors.Join(err, logs.flush())
 }
 func (r *runner) cleanup(args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -107,12 +115,19 @@ func bind(src, dst string, ro bool) string {
 	return s
 }
 func (r *runner) ensureImage(ctx context.Context, image string) error {
-	if _, err := r.capture(ctx, "image", "inspect", image); err == nil {
+	// A cache miss is expected; suppress inspect's diagnostic before pulling.
+	cmd := exec.CommandContext(ctx, r.opts.Docker, r.dockerArgs([]string{"image", "inspect", image})...)
+	if err := cmd.Run(); err == nil {
+		fmt.Fprintf(r.out, "%sAlready have image: %s\n", r.prefix, image)
 		return nil
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	fmt.Fprintf(r.out, "%sPulling image: %s\n", r.prefix, image)
 	return r.command(ctx, "", "pull", image)
 }
-func (r *runner) run(ctx context.Context, p Plan) error {
+func (r *runner) run(ctx context.Context, p Plan) (runErr error) {
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 	socket, err := filepath.Abs(r.opts.Socket)
@@ -133,6 +148,13 @@ func (r *runner) run(ctx context.Context, p Plan) error {
 		return err
 	}
 	defer release()
+	// Like gcloud builds submit, stream build output to stdout.
+	fmt.Fprintf(r.out, "starting build %q\n\n", r.id)
+	defer func() {
+		if runErr != nil {
+			fmt.Fprintln(r.out, "ERROR")
+		}
+	}()
 	if strings.Contains(p.Workspace, ",") || strings.Contains(socket, ",") {
 		return fmt.Errorf("Docker bind mount paths cannot contain commas")
 	}
@@ -152,14 +174,24 @@ func (r *runner) run(ctx context.Context, p Plan) error {
 		}
 	}
 	for _, name := range volumes {
-		if err = r.command(ctx, "", "volume", "create", name); err != nil {
+		setup := *r
+		setup.out = io.Discard
+		if err = setup.command(ctx, "", "volume", "create", name); err != nil {
 			return err
 		}
 		defer r.cleanup("volume", "rm", "--force", name)
 	}
+	fmt.Fprintln(r.out, "BUILD")
 	for i, s := range p.Steps {
-		fmt.Fprintf(r.logs, "gcloud-local: step %d (%s): %s in %s\n", i, s.Step.ID, s.Image, s.Workdir)
-		err = r.step(ctx, i, s, p.Workspace, volumes)
+		label := stepIdentifier(i, s.Step.ID)
+		if len(p.Steps) > 1 {
+			fmt.Fprintf(r.out, "Starting %s\n", label)
+			r.prefix = label + ": "
+		}
+		stepRunner := *r
+		stepRunner.logs = r.out
+		err = stepRunner.step(ctx, i, s, p.Workspace, volumes)
+		r.prefix = ""
 		if err != nil {
 			// Cancellation and timeout are build failures, even for allowFailure steps.
 			if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -167,7 +199,7 @@ func (r *runner) run(ctx context.Context, p Plan) error {
 			}
 			var stepErr *stepExitError
 			if !errors.As(err, &stepErr) {
-				return fmt.Errorf("step %d (%s) could not execute: %w", i, s.Step.ID, err)
+				return fmt.Errorf("build step %d %q could not execute: %w", i, s.Image, err)
 			}
 			code := stepErr.code
 			allowed := s.Step.AllowFailure && len(s.Step.AllowExitCodes) == 0
@@ -177,21 +209,28 @@ func (r *runner) run(ctx context.Context, p Plan) error {
 				}
 			}
 			if !allowed {
-				return fmt.Errorf("step %d (%s) failed: %w", i, s.Step.ID, err)
+				return fmt.Errorf("build step %d %q failed: %w", i, s.Image, err)
 			}
-			fmt.Fprintf(r.logs, "gcloud-local: step %d failure allowed: %v\n", i, err)
+			fmt.Fprintf(r.out, "WARNING: %s failed but is allowed to fail: %v\n", label, err)
+		}
+		if len(p.Steps) > 1 {
+			fmt.Fprintf(r.out, "Finished %s\n", label)
 		}
 	}
 	if r.opts.NoPush {
 		fmt.Fprintln(r.logs, "gcloud-local: --no-push skipped final images push")
 	} else {
+		fmt.Fprintln(r.out, "PUSH")
 		for _, image := range p.Images {
-			if err = r.command(ctx, "", "push", image); err != nil {
+			fmt.Fprintf(r.out, "Pushing %s\n", image)
+			pushRunner := *r
+			pushRunner.logs = r.out
+			if err = pushRunner.command(ctx, "", "push", image); err != nil {
 				return err
 			}
 		}
 	}
-	fmt.Fprintln(r.logs, "gcloud-local: build succeeded")
+	fmt.Fprintln(r.out, "DONE")
 	return nil
 }
 func (r *runner) step(ctx context.Context, index int, s StepPlan, root string, volumes map[string]string) error {

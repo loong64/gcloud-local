@@ -14,7 +14,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := localbuild.Main(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "gcloud-local:", err)
+		fmt.Fprintln(os.Stderr, "ERROR: (gcloud-local.builds.submit)", err)
 		os.Exit(localbuild.ExitCode(err))
 	}
 }

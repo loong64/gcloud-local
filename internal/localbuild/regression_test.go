@@ -43,9 +43,9 @@ esac
 		if err := r.ensureImage(context.Background(), "ghcr.io/loong64/cloud-builders/docker"); err != nil {
 			t.Fatal(err)
 		}
-		want := "pull\nghcr.io/loong64/cloud-builders/docker\n"
+		want := "Pulling image: ghcr.io/loong64/cloud-builders/docker\npull\nghcr.io/loong64/cloud-builders/docker\n"
 		if cached {
-			want = ""
+			want = "Already have image: ghcr.io/loong64/cloud-builders/docker\n"
 		}
 		if output.String() != want {
 			t.Fatalf("cached=%v: got %q, want %q", cached, output.String(), want)
