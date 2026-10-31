@@ -44,6 +44,30 @@ func TestDockerIntegration(t *testing.T) {
 		t.Log(logs.String())
 		return logs.String(), err, id
 	}
+	t.Run("make-without-entrypoint", func(t *testing.T) {
+		for _, hook := range []bool{false, true} {
+			t.Run(fmt.Sprintf("before-script=%v", hook), func(t *testing.T) {
+				o := testCLI()
+				o.Source = t.TempDir()
+				o.NoPush = true
+				writeTestFile(t, filepath.Join(o.Source, "Makefile"), "manifest:\n\t@printf 'make-manifest-ok\\n' > result\n", 0644)
+				before := ""
+				if hook {
+					before = "test \"$PWD\" = /workspace"
+				}
+				o.BeforeScriptLinux = before
+				c := Config{Steps: []Step{{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"make", "manifest"}}}}
+				logs, err, _ := run(t, c, o)
+				if err != nil {
+					t.Fatalf("make manifest: %v\n%s", err, logs)
+				}
+				result, err := os.ReadFile(filepath.Join(o.Source, "result"))
+				if err != nil || string(result) != "make-manifest-ok\n" {
+					t.Fatalf("make output %q: %v", result, err)
+				}
+			})
+		}
+	})
 	t.Run("build-and-inspect", func(t *testing.T) {
 		c, err := load(filepath.Join("..", "..", "examples", "smoke.yaml"))
 		if err != nil {
@@ -75,8 +99,8 @@ func TestDockerIntegration(t *testing.T) {
 		o.NoPush = true
 		c := Config{Steps: []Step{
 			{Name: "ghcr.io/loong64/cloud-builders/docker", Entrypoint: "bash", Args: []string{"-euc", `gcloud --quiet auth configure-docker; docker push invalid.local/never:push; docker image push invalid.local/never:push; docker manifest create invalid.local/never:push; docker manifest annotate invalid.local/never:push x; docker manifest push invalid.local/never:push; docker --config /gcloud-local/docker-config push invalid.local/never:push; docker --log-level=error image push invalid.local/never:push`}},
-			{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"push", "invalid.local/never:push"}},
-			{Name: "ghcr.io/loong64/cloud-builders/docker", Entrypoint: "/usr/bin/docker", Args: []string{"push", "invalid.local/never:push"}},
+			{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"docker", "push", "invalid.local/never:push"}},
+			{Name: "ghcr.io/loong64/cloud-builders/docker", Entrypoint: "/usr/local/bin/docker", Args: []string{"push", "invalid.local/never:push"}},
 		}, Images: []string{"ghcr.io/loong64/cloud-builders/docker"}}
 		logs, err, _ := run(t, c, o)
 		if err != nil {
@@ -142,7 +166,7 @@ func TestDockerIntegration(t *testing.T) {
 		o := testCLI()
 		o.Source = t.TempDir()
 		o.NoPush = true
-		c := Config{Steps: []Step{{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"buildx", "build", "--push", "."}}}}
+		c := Config{Steps: []Step{{Name: "ghcr.io/loong64/cloud-builders/docker", Args: []string{"docker", "buildx", "build", "--push", "."}}}}
 		logs, err, _ := run(t, c, o)
 		if ExitCode(err) != 2 || !strings.Contains(logs, "refuses a build") {
 			t.Fatal(logs, err)

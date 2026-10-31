@@ -14,7 +14,7 @@ steps:
         docker buildx version
   - name: ghcr.io/loong64/cloud-builders/docker
     id: build
-    args: ['build', '-t', '${_IMAGE}', '.']
+    args: ['docker', 'build', '-t', '${_IMAGE}', '.']
 substitutions:
   _MESSAGE: local-build-ok
   _IMAGE: gcloud-local-smoke:test

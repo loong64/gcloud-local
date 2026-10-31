@@ -47,11 +47,11 @@ func TestBeforeScriptContainerIntegration(t *testing.T) {
 			wantOrder: "args\n",
 		},
 		{
-			name: "default-docker-entrypoint",
+			name: "docker-command-without-entrypoint",
 			hook: "printf 'hook\\n' >> order; export PREPARED=ready",
 			config: `steps:
   - name: ghcr.io/loong64/cloud-builders/docker
-    args: ['--version']
+    args: ['docker', '--version']
 `,
 			wantOrder: "hook\n",
 		},
@@ -71,7 +71,7 @@ func TestBeforeScriptContainerIntegration(t *testing.T) {
 			config: `steps:
   - name: ghcr.io/loong64/cloud-builders/docker
     timeout: 2s
-    args: ['--version']
+    args: ['docker', '--version']
 `,
 			code: 1,
 		},
@@ -93,7 +93,7 @@ func TestBeforeScriptContainerIntegration(t *testing.T) {
 			if tc.name == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("got %v", err)
 			}
-			if tc.name == "default-docker-entrypoint" && !strings.Contains(output.String(), "Docker version") {
+			if tc.name == "docker-command-without-entrypoint" && !strings.Contains(output.String(), "Docker version") {
 				t.Fatal(output.String())
 			}
 			order, readErr := os.ReadFile(filepath.Join(root, "order"))
